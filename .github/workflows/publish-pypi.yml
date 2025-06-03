@@ -1,0 +1,201 @@
+name: Publish Package to PyPI
+run-name: "[Publish PyPI] Ref:${{ github.ref_name }} Event:${{ github.event_name }}"
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        required: false
+        type: string
+        default: '3.11'
+        description: 'Python version to use'
+      registry_url:
+        required: false
+        type: string
+        default: 'https://pypi.org'
+        description: 'PyPI registry URL'
+      enable_provenance:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to enable package provenance'
+    secrets:
+      PYPI_TOKEN:
+        required: true
+        description: 'PyPI token for publishing packages'
+  release:
+    types: [published]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag signature
+        run: |
+          # Get the tag name from the release event
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          
+          # Verify the tag exists and is signed
+          if ! git verify-tag "$TAG_NAME"; then
+            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
+            exit 1
+          fi
+          
+          # Verify the tag points to a commit on main
+          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
+          MAIN_COMMIT=$(git rev-parse origin/main)
+          
+          # Check if the tag commit is an ancestor of main
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
+            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
+            exit 1
+          fi
+
+  validate:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.11' }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Validate pyproject.toml
+        run: |
+          if [ ! -f "pyproject.toml" ]; then
+            echo "::error::pyproject.toml file not found"
+            exit 1
+          fi
+          
+          # Check for required fields using Python
+          python -c "
+          import tomli
+          with open('pyproject.toml', 'rb') as f:
+              data = tomli.load(f)
+          required_fields = ['name', 'version', 'description', 'authors', 'license']
+          missing = [field for field in required_fields if field not in data.get('project', {})]
+          if missing:
+              print(f'::error::Missing required fields in pyproject.toml: {missing}')
+              exit(1)
+          "
+
+      # Check for typosquatting
+      - name: Checking typosquatting patterns
+        run: |
+          PACKAGE_NAME=$(python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['project']['name'])")
+          echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          # Common typosquatting patterns with descriptions
+          declare -A PATTERNS=()
+
+          # Only add hyphen/underscore conversions if the character exists
+          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
+          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
+
+          # Add python prefix/suffix patterns
+          PATTERNS["${PACKAGE_NAME}-python"]="Added '-python' suffix"
+          PATTERNS["python-${PACKAGE_NAME}"]="Added 'python-' prefix"
+
+          # Only add character substitutions if the character exists in the package name
+          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
+          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
+          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
+          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
+          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
+          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
+
+          FOUND_SQUATTERS=false
+          echo "📦 Found packages names similar to yours $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          for pattern in "${!PATTERNS[@]}"; do
+            if pip index versions "$pattern" &>/dev/null; then
+              FOUND_SQUATTERS=true
+              echo "⚠️ Package: $pattern"
+              echo "Pattern: ${PATTERNS[$pattern]}"
+              echo "URL: https://pypi.org/project/$pattern"
+              echo "----------------------------------------"
+            fi
+          done
+
+          if [ "$FOUND_SQUATTERS" = true ]; then
+            echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
+            echo "TYPOSQUATTERS_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "✅ No typosquatters found."
+            echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
+          fi
+
+      # Check if package name is available
+      - name: Checking full match
+        run: |
+          PACKAGE_NAME=$(python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['project']['name'])")
+          if pip index versions $PACKAGE_NAME &>/dev/null; then
+            echo "Package name $PACKAGE_NAME is already taken."
+            echo "PACKAGE_TAKEN=true" >> $GITHUB_ENV
+            echo "::error::Package name $PACKAGE_NAME is already taken. Exiting workflow."
+            # exit 1 # REMOVE IN PROD
+          else
+            echo "Package name $PACKAGE_NAME is available."
+            echo "PACKAGE_TAKEN=false" >> $GITHUB_ENV
+          fi
+
+  publish:
+    needs: [verify, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi-publish
+      url: https://pypi.org/project/${{ needs.validate.outputs.PACKAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.11' }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Verify package integrity
+        run: |
+          twine check dist/*
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ "${{ inputs.enable_provenance }}" = "true" ]; then
+            twine upload --verbose dist/* --provenance
+          else
+            twine upload --verbose dist/*
+          fi
