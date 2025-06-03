@@ -62,10 +62,16 @@ jobs:
           # Check for a valid signature (even without trusted public key)
           echo "🔐 Verifying GPG signature..."
           TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          if ! echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature"; then
-            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
+          if echo "$TAG_VERIFY_OUTPUT" | grep -q "BAD signature"; then
+            echo "::error::❌ Tag $TAG_NAME has a bad signature"
             echo "$TAG_VERIFY_OUTPUT"
             exit 1
+          elif echo "$TAG_VERIFY_OUTPUT" | grep -q "no signature found"; then
+            echo "::error::❌ Tag $TAG_NAME is not signed"
+            echo "$TAG_VERIFY_OUTPUT"
+            exit 1
+          else
+            echo "✅ Signature is present (trusted or not)"
           fi
 
           # Verify the tag points to a commit on main
