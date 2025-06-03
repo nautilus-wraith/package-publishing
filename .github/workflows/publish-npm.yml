@@ -53,6 +53,14 @@ jobs:
             exit 1
           fi
 
+          # Check for a valid signature (even without trusted public key)
+          TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1)
+          if ! echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature"; then
+            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
+            echo "$TAG_VERIFY_OUTPUT"
+            exit 1
+          fi
+
           # Verify the tag exists and is signed
           if ! git verify-tag "$TAG_NAME"; then
             echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
