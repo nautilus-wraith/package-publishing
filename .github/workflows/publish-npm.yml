@@ -43,17 +43,24 @@ jobs:
 
       - name: Verify tag signature
         run: |
+          set -euo pipefail
           # Get the tag name from the release event
           TAG_NAME="${{ github.event.release.tag_name }}"
+          echo "🔍 Verifying tag: $TAG_NAME"
+
+          # Fetch all history and tags
+          echo "📥 Fetching all branches and tags..."
           git fetch --all --tags --force
           
           # Check if the tag is annotated
+          echo "🔎 Checking if tag is annotated..."
           if ! git for-each-ref --format='%(objecttype)' refs/tags/"$TAG_NAME" | grep -q '^tag$'; then
             echo "::error::Tag $TAG_NAME is not an annotated tag (likely a lightweight tag)"
             exit 1
           fi
 
           # Check for a valid signature (even without trusted public key)
+          echo "🔐 Verifying GPG signature..."
           TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1)
           if ! echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature"; then
             echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
@@ -61,21 +68,20 @@ jobs:
             exit 1
           fi
 
-          # # Verify the tag exists and is signed
-          # if ! git verify-tag "$TAG_NAME"; then
-          #   echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
-          #   exit 1
-          # fi
-          
           # Verify the tag points to a commit on main
+          echo "🔎 Verifying tag points to a commit on main..."
           TAG_COMMIT=$(git rev-parse "$TAG_NAME")
           MAIN_COMMIT=$(git rev-parse origin/main)
+          echo "🔍 Tag commit: $TAG_COMMIT"
+          echo "🔍 Main commit: $MAIN_COMMIT"
           
           # Check if the tag commit is an ancestor of main
+          echo "🔁 Checking tag commit ancestry against origin/main..."
           if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
             echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
             exit 1
           fi
+          echo "✅ All tag checks passed"
 
   validate:
     needs: verify
