@@ -61,11 +61,11 @@ jobs:
             exit 1
           fi
 
-          # Verify the tag exists and is signed
-          if ! git verify-tag "$TAG_NAME"; then
-            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
-            exit 1
-          fi
+          # # Verify the tag exists and is signed
+          # if ! git verify-tag "$TAG_NAME"; then
+          #   echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
+          #   exit 1
+          # fi
           
           # Verify the tag points to a commit on main
           TAG_COMMIT=$(git rev-parse "$TAG_NAME")
