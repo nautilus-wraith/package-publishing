@@ -45,7 +45,14 @@ jobs:
         run: |
           # Get the tag name from the release event
           TAG_NAME="${{ github.event.release.tag_name }}"
+          git fetch --all --tags --force
           
+          # Check if the tag is annotated
+          if ! git for-each-ref --format='%(objecttype)' refs/tags/"$TAG_NAME" | grep -q '^tag$'; then
+            echo "::error::Tag $TAG_NAME is not an annotated tag (likely a lightweight tag)"
+            exit 1
+          fi
+
           # Verify the tag exists and is signed
           if ! git verify-tag "$TAG_NAME"; then
             echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
