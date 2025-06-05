@@ -36,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,7 +47,6 @@ jobs:
         run: |
           set -euo pipefail
           # Get the tag name from the release event
-          TAG_NAME="${{ github.event.release.tag_name }}"
           echo "🔍 Verifying tag: $TAG_NAME"
 
           # Fetch all history and tags
@@ -59,20 +60,27 @@ jobs:
             exit 1
           fi
 
-          # Check for a valid signature (even without trusted public key)
-          echo "🔐 Verifying GPG signature..."
+          # Get the signer's username from the tag
+          echo "👤 Extracting signer information..."
           TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          if echo "$TAG_VERIFY_OUTPUT" | grep -q "BAD signature"; then
-            echo "::error::❌ Tag $TAG_NAME has a bad signature"
-            echo "$TAG_VERIFY_OUTPUT"
+          SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@users\.noreply\.github\.com>"' | grep -oP '@\K[^>]+' || echo "")
+          
+          if [ -z "$SIGNER_USERNAME" ]; then
+            echo "::error::Could not extract signer username from tag"
             exit 1
-          elif echo "$TAG_VERIFY_OUTPUT" | grep -q "no signature found"; then
-            echo "::error::❌ Tag $TAG_NAME is not signed"
-            echo "$TAG_VERIFY_OUTPUT"
-            exit 1
-          else
-            echo "✅ Signature is present (trusted or not)"
           fi
+          
+          echo "🔑 Fetching GPG key for user: $SIGNER_USERNAME"
+          # Fetch the GPG key from GitHub
+          curl -s "https://github.com/$SIGNER_USERNAME.gpg" | gpg --import
+          
+          # Verify the tag with the imported key
+          echo "🔐 Verifying GPG signature..."
+          if ! git tag -v "$TAG_NAME"; then
+            echo "::error::❌ Tag $TAG_NAME verification failed"
+            exit 1
+          fi
+          echo "✅ Signature verified successfully with signer's GPG key"
 
           # Verify the tag points to a commit on main
           echo "🔎 Verifying tag points to a commit on main..."
