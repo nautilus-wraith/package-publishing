@@ -71,17 +71,17 @@ jobs:
           
           # Pattern 1: GitHub noreply email from tagger line
           if echo "$TAG_VERIFY_OUTPUT" | grep -q "tagger.*@users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'tagger.*? <.*?@users\.noreply\.github\.com>' | grep -oP '@\K[^>]+' || echo "")
+            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'tagger\s+\K[^<]+' | xargs || echo "")
           fi
           
           # Pattern 2: GitHub noreply email from signature
           if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@users\.noreply\.github\.com>"' | grep -oP '@\K[^>]+' || echo "")
+            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
           fi
           
           # Pattern 3: Regular email
           if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature from"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@[^>]+>"' | grep -oP '<.*?@([^>]+)>' | cut -d@ -f2 | cut -d'>' -f1 || echo "")
+            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
           fi
           
           if [ -z "$SIGNER_USERNAME" ]; then
