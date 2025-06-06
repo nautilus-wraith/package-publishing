@@ -63,16 +63,44 @@ jobs:
           # Get the signer's username from the tag
           echo "👤 Extracting signer information..."
           TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@users\.noreply\.github\.com>"' | grep -oP '@\K[^>]+' || echo "")
+          echo "Raw verification output:"
+          echo "$TAG_VERIFY_OUTPUT"
+          
+          # Try different patterns to extract the signer
+          SIGNER_USERNAME=""
+          
+          # Pattern 1: GitHub noreply email
+          if echo "$TAG_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
+            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@users\.noreply\.github\.com>"' | grep -oP '@\K[^>]+' || echo "")
+          fi
+          
+          # Pattern 2: Regular email
+          if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature from"; then
+            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from ".*? <.*?@[^>]+>"' | grep -oP '<.*?@([^>]+)>' | cut -d@ -f2 | cut -d'>' -f1 || echo "")
+          fi
           
           if [ -z "$SIGNER_USERNAME" ]; then
-            echo "::error::Could not extract signer username from tag"
+            echo "::error::Could not extract signer username from tag. Please ensure the tag is signed with a valid GPG key."
+            echo "Verification output:"
+            echo "$TAG_VERIFY_OUTPUT"
             exit 1
           fi
           
+          echo "Found signer: $SIGNER_USERNAME"
           echo "🔑 Fetching GPG key for user: $SIGNER_USERNAME"
+          
           # Fetch the GPG key from GitHub
-          curl -s "https://github.com/$SIGNER_USERNAME.gpg" | gpg --import
+          KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$SIGNER_USERNAME.gpg")
+          HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
+          KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Failed to fetch GPG key for user $SIGNER_USERNAME (HTTP $HTTP_CODE)"
+            echo "Please ensure the GPG key is uploaded to GitHub at https://github.com/$SIGNER_USERNAME.gpg"
+            exit 1
+          fi
+          
+          echo "$KEY_CONTENT" | gpg --import
           
           # Verify the tag with the imported key
           echo "🔐 Verifying GPG signature..."
