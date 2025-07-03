@@ -163,6 +163,8 @@ jobs:
           
           # Track approvals found
           declare -A APPROVALS_FOUND=()
+          # Track unique approvers to ensure 3 different people
+          declare -A UNIQUE_APPROVERS=()
           
           echo "📋 Checking approval files in $RELEASE_DIR"
           
@@ -228,6 +230,7 @@ jobs:
                 if grep -q "^$USERNAME$" "$APPROVER_FILE" 2>/dev/null; then
                   USER_TIER="$tier"
                   APPROVALS_FOUND["$tier"]="$USERNAME"
+                  UNIQUE_APPROVERS["$USERNAME"]="$tier"
                   echo "✅ User $USERNAME found in $tier tier approvers"
                   break
                 fi
@@ -258,10 +261,35 @@ jobs:
             exit 1
           fi
           
+          # Validate that we have exactly 3 different approvers
+          echo "🔍 Validating unique approvers..."
+          UNIQUE_COUNT=${#UNIQUE_APPROVERS[@]}
+          echo "Found $UNIQUE_COUNT unique approvers: ${!UNIQUE_APPROVERS[*]}"
+          
+          if [ "$UNIQUE_COUNT" -ne 3 ]; then
+            echo "::error::Expected exactly 3 different approvers, but found $UNIQUE_COUNT"
+            echo "Current approvers: ${!UNIQUE_APPROVERS[*]}"
+            echo "Each tier must be approved by a different person"
+            exit 1
+          fi
+          
+          # Validate that each approver is from a different tier
+          TIERS_COVERED=()
+          for username in "${!UNIQUE_APPROVERS[@]}"; do
+            TIER="${UNIQUE_APPROVERS[$username]}"
+            if [[ " ${TIERS_COVERED[*]} " =~ " ${TIER} " ]]; then
+              echo "::error::Multiple approvers from the same tier: $TIER"
+              echo "Each tier must be approved by a different person"
+              exit 1
+            fi
+            TIERS_COVERED+=("$TIER")
+          done
+          
           echo "🎉 All required approvals validated successfully!"
           echo "✅ first tier: ${APPROVALS_FOUND[first]}"
           echo "✅ second tier: ${APPROVALS_FOUND[second]}"  
           echo "✅ appsec tier: ${APPROVALS_FOUND[appsec]}"
+          echo "✅ All approvals from different people: ${!UNIQUE_APPROVERS[*]}"
 
   validate:
     needs: [verify, validate-approvals]
