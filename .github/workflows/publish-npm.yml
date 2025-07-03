@@ -130,8 +130,141 @@ jobs:
           fi
           echo "✅ All tag checks passed"
 
-  validate:
+  validate-approvals:
     needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release approvals
+        run: |
+          set -euo pipefail
+          echo "🔍 Validating release approvals for tag: $TAG_NAME"
+          
+          # Check if release approval directory exists
+          RELEASE_DIR=".github/releases/$TAG_NAME"
+          if [ ! -d "$RELEASE_DIR" ]; then
+            echo "::error::Release approval directory $RELEASE_DIR does not exist"
+            exit 1
+          fi
+          
+          # Define approval tiers and their required files
+          declare -A APPROVER_TIERS=(
+            ["first"]=".github/approvers/first"
+            ["second"]=".github/approvers/second" 
+            ["appsec"]=".github/approvers/appsec"
+          )
+          
+          # Track approvals found
+          declare -A APPROVALS_FOUND=()
+          
+          echo "📋 Checking approval files in $RELEASE_DIR"
+          
+          # Get all approval files in the release directory
+          if [ -z "$(ls -A $RELEASE_DIR 2>/dev/null)" ]; then
+            echo "::error::No approval files found in $RELEASE_DIR"
+            exit 1
+          fi
+          
+          # Validate each approval file
+          for approval_file in "$RELEASE_DIR"/*; do
+            if [ -f "$approval_file" ]; then
+              USERNAME=$(basename "$approval_file")
+              echo "🔍 Validating approval file for user: $USERNAME"
+              
+              # Get the commit that last modified this file
+              COMMIT_HASH=$(git log -1 --format="%H" -- "$approval_file")
+              if [ -z "$COMMIT_HASH" ]; then
+                echo "::error::Could not find commit for approval file: $approval_file"
+                exit 1
+              fi
+              
+              echo "📝 Last commit for $approval_file: $COMMIT_HASH"
+              
+              # Get commit verification info
+              COMMIT_VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
+              echo "Commit verification output for $COMMIT_HASH:"
+              echo "$COMMIT_VERIFY_OUTPUT"
+              
+              # Check if commit is signed
+              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Good signature"; then
+                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a valid GPG key"
+                exit 1
+              fi
+              
+              # Extract signer information from commit
+              COMMIT_SIGNER=""
+              if echo "$COMMIT_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | head -1 | xargs || echo "")
+              fi
+              
+              if [ -z "$COMMIT_SIGNER" ] && echo "$COMMIT_VERIFY_OUTPUT" | grep -q "Good signature from"; then
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | head -1 | xargs || echo "")
+              fi
+              
+              if [ -z "$COMMIT_SIGNER" ]; then
+                echo "::error::Could not extract signer from commit $COMMIT_HASH"
+                exit 1
+              fi
+              
+              echo "✅ Commit signed by: $COMMIT_SIGNER"
+              
+              # Verify that the file was signed by the expected user
+              if [[ "$COMMIT_SIGNER" != *"$USERNAME"* ]]; then
+                echo "::error::Approval file $approval_file must be signed by $USERNAME, but was signed by $COMMIT_SIGNER"
+                exit 1
+              fi
+              
+              # Check which approval tier this user belongs to
+              USER_TIER=""
+              for tier in "${!APPROVER_TIERS[@]}"; do
+                APPROVER_FILE="${APPROVER_TIERS[$tier]}"
+                if grep -q "^$USERNAME$" "$APPROVER_FILE" 2>/dev/null; then
+                  USER_TIER="$tier"
+                  APPROVALS_FOUND["$tier"]="$USERNAME"
+                  echo "✅ User $USERNAME found in $tier tier approvers"
+                  break
+                fi
+              done
+              
+              if [ -z "$USER_TIER" ]; then
+                echo "::error::User $USERNAME is not found in any approver tier"
+                exit 1
+              fi
+            fi
+          done
+          
+          # Check that we have approvals from all required tiers
+          echo "📊 Checking required approvals..."
+          MISSING_APPROVALS=()
+          
+          for tier in "${!APPROVER_TIERS[@]}"; do
+            if [ -z "${APPROVALS_FOUND[$tier]:-}" ]; then
+              MISSING_APPROVALS+=("$tier")
+            else
+              echo "✅ $tier tier approved by: ${APPROVALS_FOUND[$tier]}"
+            fi
+          done
+          
+          if [ ${#MISSING_APPROVALS[@]} -ne 0 ]; then
+            echo "::error::Missing approvals from the following tiers: ${MISSING_APPROVALS[*]}"
+            echo "Required: Each tier (first, second, appsec) must have at least one approval"
+            exit 1
+          fi
+          
+          echo "🎉 All required approvals validated successfully!"
+          echo "✅ first tier: ${APPROVALS_FOUND[first]}"
+          echo "✅ second tier: ${APPROVALS_FOUND[second]}"  
+          echo "✅ appsec tier: ${APPROVALS_FOUND[appsec]}"
+
+  validate:
+    needs: [verify, validate-approvals]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -242,7 +375,7 @@ jobs:
           fi
 
   wait-for-approval:
-    needs: validate
+    needs: [validate-approvals, validate]
     if: needs.validate.outputs.package_taken == 'true'
     runs-on: ubuntu-latest
     environment:
