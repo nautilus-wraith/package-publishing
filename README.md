@@ -163,6 +163,8 @@ The package publishing workflows include a comprehensive approval system that re
    - Verifies the signer matches the username in the file name
    - Confirms each approving user is listed in the appropriate approver tier file
    - Ensures at least one approval from each tier (first, second, appsec)
+   - **Validates unique usernames**: Each approval file must have a unique username (no duplicates)
+   - **Requires 3 different people**: Each tier must be approved by a different person
 
 4. **Example Approval Flow**
    ```
@@ -172,6 +174,8 @@ The package publishing workflows include a comprehensive approval system that re
    - .github/releases/1.0.0/senior1 (signed by senior1)  
    - .github/releases/1.0.0/rkgh4096 (signed by rkgh4096)
    ```
+   
+   **Important**: Each file must have a unique username, and each tier must be approved by a different person.
 
 ### Setting Up Approval Files
 
@@ -196,10 +200,16 @@ The package publishing workflows include a comprehensive approval system that re
    mkdir -p .github/releases/1.0.0
    
    # Create approval files (content doesn't matter)
+   # IMPORTANT: Each file must have a unique username
    echo "Approved" > .github/releases/1.0.0/dev1
    echo "Approved" > .github/releases/1.0.0/senior1
    echo "Approved" > .github/releases/1.0.0/rkgh4096
    ```
+   
+   **Validation Rules**:
+   - ✅ Each file must have a unique username (no duplicates)
+   - ✅ Each tier must be approved by a different person
+   - ✅ Each file must be committed with a signed commit by the respective user
 
 3. **Commit with Signed Commits**
    ```bash

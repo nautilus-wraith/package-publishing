@@ -165,6 +165,8 @@ jobs:
           declare -A APPROVALS_FOUND=()
           # Track unique approvers to ensure 3 different people
           declare -A UNIQUE_APPROVERS=()
+          # Track usernames to detect duplicates
+          declare -A USERNAME_COUNT=()
           
           echo "📋 Checking approval files in $RELEASE_DIR"
           
@@ -179,6 +181,14 @@ jobs:
             if [ -f "$approval_file" ]; then
               USERNAME=$(basename "$approval_file")
               echo "🔍 Validating approval file for user: $USERNAME"
+              
+              # Check for duplicate usernames
+              if [ -n "${USERNAME_COUNT[$USERNAME]:-}" ]; then
+                echo "::error::Duplicate username found: $USERNAME"
+                echo "Each approval file must have a unique username. Found multiple files for: $USERNAME"
+                exit 1
+              fi
+              USERNAME_COUNT["$USERNAME"]=1
               
               # Get the commit that last modified this file
               COMMIT_HASH=$(git log -1 --format="%H" -- "$approval_file")
@@ -222,6 +232,28 @@ jobs:
                 echo "::error::Approval file $approval_file must be signed by $USERNAME, but was signed by $COMMIT_SIGNER"
                 exit 1
               fi
+              
+              # Fetch and import the GPG key from GitHub for proper verification
+              echo "🔑 Fetching GPG key for user: $USERNAME"
+              KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$USERNAME.gpg")
+              HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
+              KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
+              
+              if [ "$HTTP_CODE" != "200" ]; then
+                echo "::error::Failed to fetch GPG key for user $USERNAME (HTTP $HTTP_CODE)"
+                echo "Please ensure the GPG key is uploaded to GitHub at https://github.com/$USERNAME.gpg"
+                exit 1
+              fi
+              
+              echo "$KEY_CONTENT" | gpg --import
+              
+              # Verify the commit with the imported key
+              echo "🔐 Verifying GPG signature for commit $COMMIT_HASH..."
+              if ! git show --show-signature "$COMMIT_HASH" | grep -q "gpg: Good signature"; then
+                echo "::error::❌ Commit $COMMIT_HASH verification failed with imported GPG key"
+                exit 1
+              fi
+              echo "✅ Commit signature verified successfully with imported GPG key"
               
               # Check which approval tier this user belongs to
               USER_TIER=""
