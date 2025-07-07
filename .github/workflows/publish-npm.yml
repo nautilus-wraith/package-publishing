@@ -204,6 +204,10 @@ jobs:
               echo "Initial commit verification output for $COMMIT_HASH:"
               echo "$COMMIT_VERIFY_OUTPUT"
               
+              # Debug: Show signature lines specifically
+              echo "🔍 Signature lines:"
+              echo "$COMMIT_VERIFY_OUTPUT" | grep -E "(Signature made|Good signature|users\.noreply\.github\.com)" || echo "No signature lines found"
+              
               # Check if commit has a signature (even if we can't verify it yet)
               if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
                 echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key"
@@ -213,19 +217,24 @@ jobs:
               # Extract signer information from commit
               COMMIT_SIGNER=""
               if echo "$COMMIT_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Signature made.*\K[^<]+' | head -1 | xargs || echo "")
+                # Try to extract from GitHub noreply email pattern
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep "users\.noreply\.github\.com" | sed -n 's/.*\([a-zA-Z0-9_-]*\)@users\.noreply\.github\.com.*/\1/p' | head -1 || echo "")
               fi
               
               if [ -z "$COMMIT_SIGNER" ] && echo "$COMMIT_VERIFY_OUTPUT" | grep -q "Signature made"; then
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Signature made.*\K[^<]+' | head -1 | xargs || echo "")
+                # Try to extract from regular email pattern
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep "Signature made" | sed -n 's/.*Signature made.*<\([^@]*\)@[^>]*>.*/\1/p' | head -1 || echo "")
               fi
               
               if [ -z "$COMMIT_SIGNER" ]; then
                 echo "::error::Could not extract signer from commit $COMMIT_HASH"
+                echo "Debug: COMMIT_VERIFY_OUTPUT:"
+                echo "$COMMIT_VERIFY_OUTPUT"
                 exit 1
               fi
               
               echo "🔍 Commit signed by: $COMMIT_SIGNER"
+              echo "🔍 Expected username: $USERNAME"
               
               # Verify that the file was signed by the expected user
               if [[ "$COMMIT_SIGNER" != *"$USERNAME"* ]]; then
