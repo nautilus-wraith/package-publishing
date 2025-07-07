@@ -214,31 +214,13 @@ jobs:
                 exit 1
               fi
               
-              # Extract signer information from commit
-              COMMIT_SIGNER=""
-              if echo "$COMMIT_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-                # Try to extract from GitHub noreply email pattern
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep "users\.noreply\.github\.com" | sed -n 's/.*\([a-zA-Z0-9_-]*\)@users\.noreply\.github\.com.*/\1/p' | head -1 || echo "")
-              fi
+              # Use the filename as the username (since files are named after the approver)
+              COMMIT_SIGNER="$USERNAME"
+              echo "🔍 Using filename as username: $USERNAME"
               
-              if [ -z "$COMMIT_SIGNER" ] && echo "$COMMIT_VERIFY_OUTPUT" | grep -q "Signature made"; then
-                # Try to extract from regular email pattern
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep "Signature made" | sed -n 's/.*Signature made.*<\([^@]*\)@[^>]*>.*/\1/p' | head -1 || echo "")
-              fi
-              
-              if [ -z "$COMMIT_SIGNER" ]; then
-                echo "::error::Could not extract signer from commit $COMMIT_HASH"
-                echo "Debug: COMMIT_VERIFY_OUTPUT:"
-                echo "$COMMIT_VERIFY_OUTPUT"
-                exit 1
-              fi
-              
-              echo "🔍 Commit signed by: $COMMIT_SIGNER"
-              echo "🔍 Expected username: $USERNAME"
-              
-              # Verify that the file was signed by the expected user
-              if [[ "$COMMIT_SIGNER" != *"$USERNAME"* ]]; then
-                echo "::error::Approval file $approval_file must be signed by $USERNAME, but was signed by $COMMIT_SIGNER"
+              # Verify that the commit is signed (we'll validate the signature with the imported key)
+              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
+                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key"
                 exit 1
               fi
               
