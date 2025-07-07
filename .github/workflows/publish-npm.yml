@@ -256,11 +256,12 @@ jobs:
               USER_TIER=""
               for tier in "${!APPROVER_TIERS[@]}"; do
                 APPROVER_FILE="${APPROVER_TIERS[$tier]}"
-                if grep -q "^$USERNAME$" "$APPROVER_FILE" 2>/dev/null; then
+                # Check the approver file as it exists in the tagged commit, not current commit
+                if git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null | grep -q "^$USERNAME$"; then
                   USER_TIER="$tier"
                   APPROVALS_FOUND["$tier"]="$USERNAME"
                   UNIQUE_APPROVERS["$USERNAME"]="$tier"
-                  echo "✅ User $USERNAME found in $tier tier approvers"
+                  echo "✅ User $USERNAME found in $tier tier approvers (from tagged commit)"
                   break
                 fi
               done
