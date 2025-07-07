@@ -255,7 +255,11 @@ jobs:
               for tier in "${!APPROVER_TIERS[@]}"; do
                 APPROVER_FILE="${APPROVER_TIERS[$tier]}"
                 # Check the approver file as it exists in the tagged commit, not current commit
-                if git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null | grep -q "^$USERNAME$"; then
+                echo "🔍 Checking $tier tier file: $APPROVER_FILE"
+                APPROVER_CONTENT=$(git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null || echo "File not found in tagged commit")
+                echo "📄 Content of $APPROVER_FILE in tagged commit:"
+                echo "$APPROVER_CONTENT"
+                if echo "$APPROVER_CONTENT" | grep -q "^$USERNAME$"; then
                   USER_TIER="$tier"
                   APPROVALS_FOUND["$tier"]="$USERNAME"
                   UNIQUE_APPROVERS["$USERNAME"]="$tier"
@@ -273,6 +277,14 @@ jobs:
           
           # Check that we have approvals from all required tiers
           echo "📊 Checking required approvals..."
+          echo "🔍 Current approvals found:"
+          for tier in "${!APPROVER_TIERS[@]}"; do
+            if [ -n "${APPROVALS_FOUND[$tier]:-}" ]; then
+              echo "  - $tier tier: ${APPROVALS_FOUND[$tier]}"
+            else
+              echo "  - $tier tier: MISSING"
+            fi
+          done
           MISSING_APPROVALS=()
           
           for tier in "${!APPROVER_TIERS[@]}"; do
@@ -314,10 +326,12 @@ jobs:
           done
           
           echo "🎉 All required approvals validated successfully!"
-          echo "✅ first tier: ${APPROVALS_FOUND[first]}"
-          echo "✅ second tier: ${APPROVALS_FOUND[second]}"  
-          echo "✅ appsec tier: ${APPROVALS_FOUND[appsec]}"
-          echo "✅ All approvals from different people: ${!UNIQUE_APPROVERS[*]}"
+          echo "📋 Final approval summary:"
+          echo "  ✅ first tier: ${APPROVALS_FOUND[first]}"
+          echo "  ✅ second tier: ${APPROVALS_FOUND[second]}"  
+          echo "  ✅ appsec tier: ${APPROVALS_FOUND[appsec]}"
+          echo "  ✅ All approvals from different people: ${!UNIQUE_APPROVERS[*]}"
+          echo "  ✅ All approver lists validated from tagged commit: $TAG_NAME"
 
   validate:
     needs: [verify, validate-approvals]
