@@ -201,12 +201,10 @@ jobs:
               
               # Get initial commit verification info to check if it's signed
               COMMIT_VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
-              echo "Initial commit verification output for $COMMIT_HASH:"
-              echo "$COMMIT_VERIFY_OUTPUT"
               
-              # Debug: Show signature lines specifically
-              echo "🔍 Signature lines:"
-              echo "$COMMIT_VERIFY_OUTPUT" | grep -E "(Signature made|Good signature|users\.noreply\.github\.com)" || echo "No signature lines found"
+              # Debug: Show only signature-related lines
+              echo "🔍 Signature verification for commit $COMMIT_HASH:"
+              echo "$COMMIT_VERIFY_OUTPUT" | grep -E "(Signature made|Good signature|Can't check signature|No public key)" || echo "No signature lines found"
               
               # Check if commit has a signature (even if we can't verify it yet)
               if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
@@ -241,8 +239,8 @@ jobs:
               # Now verify the commit with the imported key
               echo "🔐 Verifying GPG signature for commit $COMMIT_HASH with imported key..."
               VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
-              echo "Verification output after importing key:"
-              echo "$VERIFY_OUTPUT"
+              echo "Verification result:"
+              echo "$VERIFY_OUTPUT" | grep -E "(Good signature|Bad signature|Can't check signature)" || echo "No verification result found"
               
               if ! echo "$VERIFY_OUTPUT" | grep -q "gpg: Good signature"; then
                 echo "::error::❌ Commit $COMMIT_HASH verification failed with imported GPG key"
