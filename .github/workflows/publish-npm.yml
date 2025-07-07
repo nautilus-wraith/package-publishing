@@ -199,25 +199,25 @@ jobs:
               
               echo "📝 Last commit for $approval_file: $COMMIT_HASH"
               
-              # Get commit verification info
+              # Get initial commit verification info to check if it's signed
               COMMIT_VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
-              echo "Commit verification output for $COMMIT_HASH:"
+              echo "Initial commit verification output for $COMMIT_HASH:"
               echo "$COMMIT_VERIFY_OUTPUT"
               
-              # Check if commit is signed
-              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Good signature"; then
-                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a valid GPG key"
+              # Check if commit has a signature (even if we can't verify it yet)
+              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
+                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key"
                 exit 1
               fi
               
               # Extract signer information from commit
               COMMIT_SIGNER=""
               if echo "$COMMIT_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | head -1 | xargs || echo "")
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Signature made.*\K[^<]+' | head -1 | xargs || echo "")
               fi
               
-              if [ -z "$COMMIT_SIGNER" ] && echo "$COMMIT_VERIFY_OUTPUT" | grep -q "Good signature from"; then
-                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | head -1 | xargs || echo "")
+              if [ -z "$COMMIT_SIGNER" ] && echo "$COMMIT_VERIFY_OUTPUT" | grep -q "Signature made"; then
+                COMMIT_SIGNER=$(echo "$COMMIT_VERIFY_OUTPUT" | grep -oP 'Signature made.*\K[^<]+' | head -1 | xargs || echo "")
               fi
               
               if [ -z "$COMMIT_SIGNER" ]; then
@@ -225,7 +225,7 @@ jobs:
                 exit 1
               fi
               
-              echo "✅ Commit signed by: $COMMIT_SIGNER"
+              echo "🔍 Commit signed by: $COMMIT_SIGNER"
               
               # Verify that the file was signed by the expected user
               if [[ "$COMMIT_SIGNER" != *"$USERNAME"* ]]; then
@@ -247,10 +247,16 @@ jobs:
               
               echo "$KEY_CONTENT" | gpg --import
               
-              # Verify the commit with the imported key
-              echo "🔐 Verifying GPG signature for commit $COMMIT_HASH..."
-              if ! git show --show-signature "$COMMIT_HASH" | grep -q "gpg: Good signature"; then
+              # Now verify the commit with the imported key
+              echo "🔐 Verifying GPG signature for commit $COMMIT_HASH with imported key..."
+              VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
+              echo "Verification output after importing key:"
+              echo "$VERIFY_OUTPUT"
+              
+              if ! echo "$VERIFY_OUTPUT" | grep -q "gpg: Good signature"; then
                 echo "::error::❌ Commit $COMMIT_HASH verification failed with imported GPG key"
+                echo "Verification output:"
+                echo "$VERIFY_OUTPUT"
                 exit 1
               fi
               echo "✅ Commit signature verified successfully with imported GPG key"
