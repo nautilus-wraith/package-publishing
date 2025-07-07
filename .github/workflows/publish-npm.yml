@@ -171,16 +171,26 @@ jobs:
           echo "📋 Checking approval files in $RELEASE_DIR"
           
           # Get all approval files in the release directory
+          echo "🔍 Listing all files in $RELEASE_DIR:"
+          ls -la "$RELEASE_DIR" || echo "Directory listing failed"
+          
           if [ -z "$(ls -A $RELEASE_DIR 2>/dev/null)" ]; then
             echo "::error::No approval files found in $RELEASE_DIR"
             exit 1
           fi
           
+          echo "📋 Found approval files:"
+          for file in "$RELEASE_DIR"/*; do
+            if [ -f "$file" ]; then
+              echo "  - $(basename "$file")"
+            fi
+          done
+          
           # Validate each approval file
           for approval_file in "$RELEASE_DIR"/*; do
             if [ -f "$approval_file" ]; then
               USERNAME=$(basename "$approval_file")
-              echo "🔍 Validating approval file for user: $USERNAME"
+              echo "🔍 Validating approval file: $approval_file (username: $USERNAME)"
               
               # Check for duplicate usernames
               if [ -n "${USERNAME_COUNT[$USERNAME]:-}" ]; then
@@ -197,7 +207,10 @@ jobs:
                 exit 1
               fi
               
-              echo "📝 Last commit for $approval_file: $COMMIT_HASH"
+              echo "📝 File: $approval_file"
+              echo "📝 Username: $USERNAME"
+              echo "📝 Last commit: $COMMIT_HASH"
+              echo "📝 File exists: $(test -f "$approval_file" && echo "YES" || echo "NO")"
               
               # Get initial commit verification info to check if it's signed
               COMMIT_VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
@@ -270,6 +283,11 @@ jobs:
               
               if [ -z "$USER_TIER" ]; then
                 echo "::error::User $USERNAME is not found in any approver tier"
+                echo "Debug: Checked all tiers for user $USERNAME:"
+                for tier in "${!APPROVER_TIERS[@]}"; do
+                  APPROVER_FILE="${APPROVER_TIERS[$tier]}"
+                  echo "  - $tier tier ($APPROVER_FILE): $(git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null | grep -c "^$USERNAME$" || echo "0") matches"
+                done
                 exit 1
               fi
             fi
