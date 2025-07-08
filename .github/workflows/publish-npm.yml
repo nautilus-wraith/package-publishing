@@ -180,20 +180,22 @@ jobs:
             # Get approvers from tagged commit
             APPROVER_CONTENT=$(git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null || echo "")
             if [ -n "$APPROVER_CONTENT" ]; then
-              echo "$APPROVER_CONTENT" | while IFS= read -r line; do
+              # Process each line without subshell
+              while IFS= read -r line; do
                 # Skip comments and empty lines
                 if [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ -n "$line" ]]; then
                   USERNAME=$(echo "$line" | xargs)  # Trim whitespace
                   if [ -n "$USERNAME" ]; then
                     if [ -n "${ALL_APPROVERS[$USERNAME]:-}" ]; then
                       DUPLICATE_APPROVERS+=("$USERNAME (found in ${ALL_APPROVERS[$USERNAME]} and $tier)")
+                      echo "  ❌ $USERNAME -> $tier tier (DUPLICATE! Already in ${ALL_APPROVERS[$USERNAME]})"
                     else
                       ALL_APPROVERS["$USERNAME"]="$tier"
                       echo "  ✅ $USERNAME -> $tier tier"
                     fi
                   fi
                 fi
-              done
+              done <<< "$APPROVER_CONTENT"
             else
               echo "  ⚠️ No approvers found in $tier tier"
             fi
