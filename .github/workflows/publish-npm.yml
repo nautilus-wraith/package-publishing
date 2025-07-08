@@ -168,6 +168,48 @@ jobs:
           # Track usernames to detect duplicates
           declare -A USERNAME_COUNT=()
           
+          # Validate approver lists for duplicates across tiers
+          echo "🔍 Validating approver lists for duplicates across tiers..."
+          declare -A ALL_APPROVERS=()
+          DUPLICATE_APPROVERS=()
+          
+          for tier in "${!APPROVER_TIERS[@]}"; do
+            APPROVER_FILE="${APPROVER_TIERS[$tier]}"
+            echo "📋 Checking $tier tier approvers..."
+            
+            # Get approvers from tagged commit
+            APPROVER_CONTENT=$(git show "$TAG_NAME:$APPROVER_FILE" 2>/dev/null || echo "")
+            if [ -n "$APPROVER_CONTENT" ]; then
+              echo "$APPROVER_CONTENT" | while IFS= read -r line; do
+                # Skip comments and empty lines
+                if [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ -n "$line" ]]; then
+                  USERNAME=$(echo "$line" | xargs)  # Trim whitespace
+                  if [ -n "$USERNAME" ]; then
+                    if [ -n "${ALL_APPROVERS[$USERNAME]:-}" ]; then
+                      DUPLICATE_APPROVERS+=("$USERNAME (found in ${ALL_APPROVERS[$USERNAME]} and $tier)")
+                    else
+                      ALL_APPROVERS["$USERNAME"]="$tier"
+                      echo "  ✅ $USERNAME -> $tier tier"
+                    fi
+                  fi
+                fi
+              done
+            else
+              echo "  ⚠️ No approvers found in $tier tier"
+            fi
+          done
+          
+          if [ ${#DUPLICATE_APPROVERS[@]} -ne 0 ]; then
+            echo "::error::Duplicate approvers found across tiers:"
+            for duplicate in "${DUPLICATE_APPROVERS[@]}"; do
+              echo "  - $duplicate"
+            done
+            echo "Each person can only be in one approval tier"
+            exit 1
+          fi
+          
+          echo "✅ No duplicate approvers found across tiers"
+          
           echo "📋 Checking approval files in $RELEASE_DIR"
           
           # Get all approval files in the release directory
