@@ -319,29 +319,45 @@ jobs:
             exit 1
           fi
           
-          # Validate that we have exactly 3 different approvers
-          echo "🔍 Validating unique approvers..."
+          # Validate that we have at least one approver from each tier
+          echo "🔍 Validating tier coverage..."
           UNIQUE_COUNT=${#UNIQUE_APPROVERS[@]}
           echo "Found $UNIQUE_COUNT unique approvers: ${!UNIQUE_APPROVERS[*]}"
           
-          if [ "$UNIQUE_COUNT" -ne 3 ]; then
-            echo "::error::Expected exactly 3 different approvers, but found $UNIQUE_COUNT"
-            echo "Current approvers: ${!UNIQUE_APPROVERS[*]}"
-            echo "Each tier must be approved by a different person"
-            exit 1
-          fi
-          
-          # Validate that each approver is from a different tier
+          # Check that each tier has at least one approval
           TIERS_COVERED=()
           for username in "${!UNIQUE_APPROVERS[@]}"; do
             TIER="${UNIQUE_APPROVERS[$username]}"
-            if [[ " ${TIERS_COVERED[*]} " =~ " ${TIER} " ]]; then
-              echo "::error::Multiple approvers from the same tier: $TIER"
-              echo "Each tier must be approved by a different person"
-              exit 1
-            fi
             TIERS_COVERED+=("$TIER")
           done
+          
+          # Check for missing tiers
+          MISSING_TIERS=()
+          for tier in "${!APPROVER_TIERS[@]}"; do
+            if [[ ! " ${TIERS_COVERED[*]} " =~ " ${tier} " ]]; then
+              MISSING_TIERS+=("$tier")
+            fi
+          done
+          
+          if [ ${#MISSING_TIERS[@]} -ne 0 ]; then
+            echo "::error::Missing approvals from the following tiers: ${MISSING_TIERS[*]}"
+            echo "Each tier must have at least one approval"
+            exit 1
+          fi
+          
+          # Check for multiple approvers from the same tier (optional warning)
+          TIER_COUNTS=()
+          for tier in "${TIERS_COVERED[@]}"; do
+            COUNT=$(echo "${TIERS_COVERED[@]}" | tr ' ' '\n' | grep -c "$tier")
+            if [ "$COUNT" -gt 1 ]; then
+              TIER_COUNTS+=("$tier($COUNT)")
+            fi
+          done
+          
+          if [ ${#TIER_COUNTS[@]} -ne 0 ]; then
+            echo "⚠️ Warning: Multiple approvers from same tier: ${TIER_COUNTS[*]}"
+            echo "This is allowed but ensure it's intentional"
+          fi
           
           echo "🎉 All required approvals validated successfully!"
           echo "📋 Final approval summary:"
