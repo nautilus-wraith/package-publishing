@@ -109,7 +109,15 @@ jobs:
       enable_provenance: true  # Optional, defaults to true
     secrets:
       PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      TEST_PYPI_TOKEN: ${{ secrets.TEST_PYPI_TOKEN }}  # Optional, falls back to PYPI_TOKEN if not set
 ```
+
+**Note**: The PyPI workflow includes comprehensive security features:
+- **Package Ownership Validation**: Uses TestPyPI to verify package ownership before publishing
+- **Dual-Registry Publishing**: Publishes to both TestPyPI and PyPI for testing and production
+- **Automatic Conflict Resolution**: If package name is taken by another user, the workflow exits with clear error messages
+- **Provenance Support**: Enables package provenance for enhanced security (when enabled)
+- **Token Flexibility**: Supports separate TestPyPI and PyPI tokens, or uses the same token for both
 
 ### Cargo Package Publishing
 
@@ -151,35 +159,64 @@ jobs:
 
 ## Features
 
-All workflows include:
+All workflows include comprehensive security features:
 
-1. **Package Validation**
-   - Checks for required fields in package configuration files
-   - Validates package structure and dependencies
+### 1. **Shared Release Verification** (via verify-release.yml)
+- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
+- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
+- **Consistent Security**: Same verification process across all package types
+- **No Package Dependencies**: Completely generic and reusable
 
-2. **Typosquatting Protection**
-   - Checks for similar package names that could be used for typosquatting
-   - Common patterns checked:
-     - Hyphen/underscore variations
-     - Language-specific prefixes/suffixes
-     - Common character substitutions (e.g., a->4, e->3)
-   - Warns about potential typosquatters in the workflow logs
+### 2. **Package-Specific Validation**
+Each workflow validates its respective package configuration:
+- **NPM**: Validates package.json with required fields (name, version, description, main, author, license)
+- **PyPI**: Validates pyproject.toml or setup.py with required fields (name, version, description, authors, license)
+- **Cargo**: Validates Cargo.toml with required fields (name, version, description, authors, license)
+- **Go**: Validates go.mod with required declarations (module, go version)
 
-3. **Multi-Tier Approval System**
-   - Requires signed commit approvals from three different tiers
-   - Each tier must have at least one approval before publishing
-   - All approvals must be signed with valid GPG keys
-   - Approval files are protected by CODEOWNERS
+### 3. **Typosquatting Protection**
+All workflows check for potential typosquatting attempts using language-specific patterns:
 
-4. **Package Publishing**
-   - Builds and tests the package
-   - Publishes to the respective registry
-   - Supports package provenance where available
+**Common Patterns (All Languages)**:
+- Hyphen/underscore variations (e.g., `my-package` vs `my_package`)
+- Character substitutions (a→4, e→3, i→1, o→0, s→5, t→7)
 
-5. **Security Requirements**
-   - All workflows require signed tags for releases
-   - Tags must point to commits on the main branch
-   - Package provenance is enabled by default where supported
+**Language-Specific Patterns**:
+- **NPM**: `-js`, `js-`, `node-` prefixes/suffixes
+- **PyPI**: `-py`, `py-`, `python-` prefixes/suffixes  
+- **Cargo**: `-rs`, `rs-`, `rust-` prefixes/suffixes
+- **Go**: `-go`, `go-`, `golang-` prefixes/suffixes
+
+### 4. **Package Name Availability and Ownership Checks**
+- **NPM**: Checks if unscoped package name is available on npmjs.org, requires manual approval if taken
+- **PyPI**: Checks if package name is available on pypi.org, validates ownership via TestPyPI upload test
+- **Cargo**: Checks if package name is available on crates.io
+- **Go**: Checks if module name is available on pkg.go.dev
+
+### 5. **Security Audits**
+- **NPM**: `npm audit --production` for dependency vulnerabilities
+- **PyPI**: Dependency scanning during installation
+- **Cargo**: `cargo audit --deny warnings` for Rust security vulnerabilities
+- **Go**: `govulncheck` for Go security vulnerabilities (when available)
+
+### 6. **Package Integrity Verification**
+- **NPM**: `npm pack --dry-run` and package validation
+- **PyPI**: `twine check` for distribution file validation
+- **Cargo**: `cargo check` and `cargo test` for compilation and testing
+- **Go**: `go mod verify` and `go test ./...` for module verification
+
+### 7. **Approval Gates**
+- **Manual Approval**: NPM workflow pauses for manual approval when unscoped package names are taken
+- **Ownership Validation**: PyPI workflow validates package ownership via TestPyPI upload test
+- **Environment Protection**: Uses GitHub Environments for additional security gates
+- **Comprehensive Validation**: All checks must pass before publishing proceeds
+
+### 8. **Package Publishing**
+- **Provenance Support**: Enables package provenance where available (NPM, PyPI)
+- **Registry Publishing**: Publishes to respective package registries
+- **Dual-Registry Publishing**: PyPI workflow publishes to both TestPyPI and PyPI
+- **Scoped Publishing**: NPM workflow supports both scoped and unscoped publishing
+- **Automatic Tagging**: Go modules are automatically published when tags are pushed
 
 ## Multi-Tier Approval System
 
@@ -366,10 +403,12 @@ protection_rules:
 
 Each workflow requires specific secrets to be set in your repository:
 
-- NPM: `NPM_TOKEN`
-- PyPI: `PYPI_TOKEN`
-- Cargo: `CARGO_TOKEN`
-- Go: `GOPROXY_TOKEN`
+- **NPM**: `NPM_TOKEN`
+- **PyPI**: `PYPI_TOKEN` (required), `TEST_PYPI_TOKEN` (optional, falls back to PYPI_TOKEN)
+- **Cargo**: `CARGO_TOKEN`
+- **Go**: `GOPROXY_TOKEN`
+
+**Note**: For PyPI, you can use the same token for both TestPyPI and PyPI, or set separate tokens for each registry. If `TEST_PYPI_TOKEN` is not provided, the workflow will use `PYPI_TOKEN` for both registries.
 
 ## Setting Up Signed Tags
 

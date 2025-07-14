@@ -25,15 +25,168 @@ jobs:
   verify-release:
     uses: ./.github/workflows/verify-release.yml
 
-  publish:
+  validate-package:
     needs: [verify-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_taken: ${{ steps.check_package.outputs.package_taken }}
+      package_name: ${{ steps.get_package_name.outputs.package_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get package name
+        id: get_package_name
+        run: |
+          # Extract module name from go.mod
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "::error::Could not extract module name from go.mod"
+            exit 1
+          fi
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Validate go.mod
+        run: |
+          # Check for required file
+          if [ ! -f "go.mod" ]; then
+            echo "::error::Missing go.mod file"
+            exit 1
+          fi
+          
+          # Validate go.mod syntax
+          if ! go mod verify 2>/dev/null; then
+            echo "::error::Invalid go.mod file"
+            exit 1
+          fi
+          
+          # Check for required fields
+          if ! grep -q "^module\s" go.mod; then
+            echo "::error::Missing 'module' declaration in go.mod"
+            exit 1
+          fi
+          
+          if ! grep -q "^go\s" go.mod; then
+            echo "::error::Missing 'go' version in go.mod"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ inputs.go_version || '1.22' }}
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      # Check for typosquatting
+      - name: Checking typosquatting patterns
+        run: |
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          # Common typosquatting patterns with descriptions
+          declare -A PATTERNS=()
+
+          # Only add hyphen/underscore conversions if the character exists
+          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
+          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
+
+          # Add Go-specific patterns
+          PATTERNS["${PACKAGE_NAME}-go"]="Added '-go' suffix"
+          PATTERNS["go-${PACKAGE_NAME}"]="Added 'go-' prefix"
+          PATTERNS["golang-${PACKAGE_NAME}"]="Added 'golang-' prefix"
+
+          # Only add character substitutions if the character exists in the package name
+          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
+          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
+          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
+          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
+          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
+          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
+
+          FOUND_SQUATTERS=false
+          echo "📦 Found packages names similar to yours $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          for pattern in "${!PATTERNS[@]}"; do
+            if curl -s "https://pkg.go.dev/$pattern" | grep -q "Module"; then
+              FOUND_SQUATTERS=true
+              VERSION=$(curl -s "https://pkg.go.dev/$pattern" | grep -oP 'Version:\s*\K[^\s]+' | head -1 || echo "unknown")
+              echo "⚠️ Package: $pattern"
+              echo "Pattern: ${PATTERNS[$pattern]}"
+              echo "Version: $VERSION"
+              echo "URL: https://pkg.go.dev/$pattern"
+              echo "----------------------------------------"
+            fi
+          done
+
+          if [ "$FOUND_SQUATTERS" = true ]; then
+            echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
+            echo "TYPOSQUATTERS_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "✅ No typosquatters found."
+            echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
+          fi
+
+      # Check if package name is available
+      - name: Checking package availability
+        id: check_package
+        run: |
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          if curl -s "https://pkg.go.dev/$PACKAGE_NAME" | grep -q "Module"; then
+            echo "Package name $PACKAGE_NAME is already taken on pkg.go.dev."
+            echo "package_taken=true" >> $GITHUB_OUTPUT
+          else
+            echo "Package name $PACKAGE_NAME is available on pkg.go.dev."
+            echo "package_taken=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Security audit
+      - name: Security audit
+        run: |
+          # Go doesn't have a built-in security audit tool like npm audit or cargo audit
+          # But we can check for known vulnerabilities in dependencies
+          echo "🔍 Checking for known security vulnerabilities..."
+          
+          # Install govulncheck if available
+          if go install golang.org/x/vuln/cmd/govulncheck@latest 2>/dev/null; then
+            govulncheck ./... || echo "⚠️ Security vulnerabilities found. Review the output above."
+          else
+            echo "ℹ️ govulncheck not available. Consider installing for security scanning."
+          fi
+
+  wait-for-approval:
+    needs: [verify-release, validate-package]
+    if: needs.validate-package.outputs.package_taken == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: package-approval
+      url: https://pkg.go.dev/${{ needs.validate-package.outputs.package_name }}
+    steps:
+      - name: Wait for approval
+        run: |
+          echo "⚠️ The package name '${{ needs.validate-package.outputs.package_name }}' is already taken on pkg.go.dev."
+          echo "Please review and approve this deployment to continue with publishing."
+          echo "If you want to proceed with publishing, approve this step."
+          echo "If you want to abort the workflow, reject this step."
+
+  publish:
+    needs: [verify-release, validate-package, wait-for-approval]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     environment:
       name: go-publish
-      url: https://pkg.go.dev/${{ needs.verify-release.outputs.package_name }}
+      url: https://pkg.go.dev/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +202,11 @@ jobs:
           go mod download
           go mod verify
           go test ./...
+          
+          # Security check
+          if go install golang.org/x/vuln/cmd/govulncheck@latest 2>/dev/null; then
+            govulncheck ./... || echo "⚠️ Security vulnerabilities found. Review the output above."
+          fi
 
       - name: Publish to pkg.go.dev
         env:
@@ -57,4 +215,7 @@ jobs:
           # Go modules are automatically published when a tag is pushed
           # This step is mainly for verification and documentation
           echo "✅ Go module is ready for publishing"
-          echo "📦 Module will be available at: https://pkg.go.dev/${{ needs.verify-release.outputs.package_name }}"
+          echo "📦 Module will be available at: https://pkg.go.dev/${{ needs.validate-package.outputs.package_name }}"
+          
+          # Verify the module can be downloaded
+          go list -m ${{ needs.validate-package.outputs.package_name }}@${{ github.event.release.tag_name }}

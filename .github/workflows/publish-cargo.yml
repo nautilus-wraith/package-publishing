@@ -25,15 +25,164 @@ jobs:
   verify-release:
     uses: ./.github/workflows/verify-release.yml
 
-  publish:
+  validate-package:
     needs: [verify-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_taken: ${{ steps.check_package.outputs.package_taken }}
+      package_name: ${{ steps.get_package_name.outputs.package_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get package name
+        id: get_package_name
+        run: |
+          # Extract package name from Cargo.toml
+          PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "::error::Could not extract package name from Cargo.toml"
+            exit 1
+          fi
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Validate Cargo.toml
+        run: |
+          # Check for required file
+          if [ ! -f "Cargo.toml" ]; then
+            echo "::error::Missing Cargo.toml file"
+            exit 1
+          fi
+          
+          # Validate TOML syntax
+          if ! python -c "import tomllib; tomllib.load(open('Cargo.toml', 'rb'))" 2>/dev/null; then
+            echo "::error::Invalid Cargo.toml file"
+            exit 1
+          fi
+          
+          # Check for required fields
+          REQUIRED_FIELDS=("name" "version" "description" "authors" "license")
+          for field in "${REQUIRED_FIELDS[@]}"; do
+            if ! grep -q "^$field\s*=" Cargo.toml; then
+              echo "::error::Missing required field '$field' in Cargo.toml"
+              exit 1
+            fi
+          done
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ inputs.rust_version || 'stable' }}
+          override: true
+
+      - name: Install dependencies
+        run: |
+          cargo install cargo-release
+          cargo install cargo-audit
+
+      - name: Install package dependencies
+        run: |
+          cargo fetch
+
+      # Check for typosquatting
+      - name: Checking typosquatting patterns
+        run: |
+          PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+          echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          # Common typosquatting patterns with descriptions
+          declare -A PATTERNS=()
+
+          # Only add hyphen/underscore conversions if the character exists
+          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
+          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
+
+          # Add Rust-specific patterns
+          PATTERNS["${PACKAGE_NAME}-rs"]="Added '-rs' suffix"
+          PATTERNS["rs-${PACKAGE_NAME}"]="Added 'rs-' prefix"
+          PATTERNS["rust-${PACKAGE_NAME}"]="Added 'rust-' prefix"
+
+          # Only add character substitutions if the character exists in the package name
+          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
+          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
+          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
+          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
+          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
+          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
+
+          FOUND_SQUATTERS=false
+          echo "📦 Found packages names similar to yours $PACKAGE_NAME"
+          echo "----------------------------------------"
+
+          for pattern in "${!PATTERNS[@]}"; do
+            if curl -s "https://crates.io/api/v1/crates/$pattern" | grep -q '"crate"'; then
+              FOUND_SQUATTERS=true
+              VERSION=$(curl -s "https://crates.io/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['max_version'])" 2>/dev/null || echo "unknown")
+              AUTHOR=$(curl -s "https://crates.io/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['repository'])" 2>/dev/null || echo "unknown")
+              echo "⚠️ Package: $pattern"
+              echo "Pattern: ${PATTERNS[$pattern]}"
+              echo "Version: $VERSION"
+              echo "Repository: $AUTHOR"
+              echo "URL: https://crates.io/crates/$pattern"
+              echo "----------------------------------------"
+            fi
+          done
+
+          if [ "$FOUND_SQUATTERS" = true ]; then
+            echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
+            echo "TYPOSQUATTERS_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "✅ No typosquatters found."
+            echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
+          fi
+
+      # Check if package name is available
+      - name: Checking package availability
+        id: check_package
+        run: |
+          PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+          if curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME" | grep -q '"crate"'; then
+            echo "Package name $PACKAGE_NAME is already taken on crates.io."
+            echo "package_taken=true" >> $GITHUB_OUTPUT
+          else
+            echo "Package name $PACKAGE_NAME is available on crates.io."
+            echo "package_taken=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Security audit
+      - name: Security audit
+        run: |
+          cargo audit --deny warnings
+
+  wait-for-approval:
+    needs: [verify-release, validate-package]
+    if: needs.validate-package.outputs.package_taken == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: package-approval
+      url: https://crates.io/crates/${{ needs.validate-package.outputs.package_name }}
+    steps:
+      - name: Wait for approval
+        run: |
+          echo "⚠️ The package name '${{ needs.validate-package.outputs.package_name }}' is already taken on crates.io."
+          echo "Please review and approve this deployment to continue with publishing."
+          echo "If you want to proceed with publishing, approve this step."
+          echo "If you want to abort the workflow, reject this step."
+
+  publish:
+    needs: [verify-release, validate-package, wait-for-approval]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     environment:
       name: cargo-publish
-      url: https://crates.io/crates/${{ needs.verify-release.outputs.package_name }}
+      url: https://crates.io/crates/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,6 +202,7 @@ jobs:
         run: |
           cargo check
           cargo test
+          cargo audit --deny warnings
 
       - name: Publish to crates.io
         env:
