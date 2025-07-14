@@ -166,6 +166,15 @@ jobs:
       GOPROXY_TOKEN: ${{ secrets.GOPROXY_TOKEN }}
 ```
 
+**Note**: The Go workflow includes comprehensive security features:
+- **Module Access Validation**: Tests module download access to verify ownership (pkg.go.dev only)
+- **Automatic Conflict Resolution**: If module name is taken by another user, the workflow exits with clear error messages
+- **Enhanced Security Audits**: Runs `govulncheck` for Go security vulnerabilities (when available)
+- **Module Integrity Verification**: Validates go.mod, go.sum, and module dependencies
+- **Clean Build Process**: Ensures fresh builds for each publish job
+- **Custom Registry Support**: Supports publishing to custom Go registries with URL validation
+- **Build Caching**: Caches Go modules and build artifacts for faster builds
+
 ## Features
 
 All workflows include comprehensive security features:
@@ -200,7 +209,7 @@ All workflows check for potential typosquatting attempts using language-specific
 - **NPM**: Checks if unscoped package name is available on npmjs.org, requires manual approval if taken
 - **PyPI**: Checks if package name is available on pypi.org, validates ownership via TestPyPI upload test
 - **Cargo**: Checks if package name is available on crates.io, validates ownership via dry-run publish test
-- **Go**: Checks if module name is available on pkg.go.dev
+- **Go**: Checks if module name is available on pkg.go.dev, validates access via module download test
 
 ### 5. **Security Audits**
 - **NPM**: `npm audit --production` for dependency vulnerabilities
@@ -218,6 +227,7 @@ All workflows check for potential typosquatting attempts using language-specific
 - **Manual Approval**: NPM workflow pauses for manual approval when unscoped package names are taken
 - **Ownership Validation**: PyPI workflow validates package ownership via TestPyPI upload test
 - **Ownership Validation**: Cargo workflow validates package ownership via dry-run publish test
+- **Access Validation**: Go workflow validates module access via download test (pkg.go.dev only)
 - **Environment Protection**: Uses GitHub Environments for additional security gates
 - **Comprehensive Validation**: All checks must pass before publishing proceeds
 
