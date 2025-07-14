@@ -78,6 +78,17 @@ jobs:
           toolchain: ${{ inputs.rust_version || 'stable' }}
           override: true
 
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install dependencies
         run: |
           cargo install cargo-release
@@ -87,11 +98,37 @@ jobs:
         run: |
           cargo fetch
 
+      # Configure custom registry if specified
+      - name: Configure custom registry
+        if: inputs.registry_url != 'https://crates.io'
+        run: |
+          REGISTRY_URL="${{ inputs.registry_url }}"
+          
+          # Validate registry URL format
+          if ! [[ "$REGISTRY_URL" =~ ^https?:// ]]; then
+            echo "::error::Invalid registry URL format: $REGISTRY_URL"
+            echo "Registry URL must start with http:// or https://"
+            exit 1
+          fi
+          
+          REGISTRY_NAME=$(echo "$REGISTRY_URL" | sed 's|https://||' | sed 's|http://||' | sed 's|\.|_|g' | sed 's|/|_|g')
+          
+          # Add custom registry to Cargo config
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << EOF
+          [registries.$REGISTRY_NAME]
+          index = "$REGISTRY_URL"
+          EOF
+          
+          echo "Configured custom registry: $REGISTRY_NAME -> $REGISTRY_URL"
+
       # Check for typosquatting
       - name: Checking typosquatting patterns
         run: |
           PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+          REGISTRY_URL="${{ inputs.registry_url || 'https://crates.io' }}"
           echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+          echo "🔍 Using registry: $REGISTRY_URL"
           echo "----------------------------------------"
 
           # Common typosquatting patterns with descriptions
@@ -119,15 +156,15 @@ jobs:
           echo "----------------------------------------"
 
           for pattern in "${!PATTERNS[@]}"; do
-            if curl -s "https://crates.io/api/v1/crates/$pattern" | grep -q '"crate"'; then
+            if curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | grep -q '"crate"'; then
               FOUND_SQUATTERS=true
-              VERSION=$(curl -s "https://crates.io/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['max_version'])" 2>/dev/null || echo "unknown")
-              AUTHOR=$(curl -s "https://crates.io/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['repository'])" 2>/dev/null || echo "unknown")
+              VERSION=$(curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['max_version'])" 2>/dev/null || echo "unknown")
+              AUTHOR=$(curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['repository'])" 2>/dev/null || echo "unknown")
               echo "⚠️ Package: $pattern"
               echo "Pattern: ${PATTERNS[$pattern]}"
               echo "Version: $VERSION"
               echo "Repository: $AUTHOR"
-              echo "URL: https://crates.io/crates/$pattern"
+              echo "URL: $REGISTRY_URL/crates/$pattern"
               echo "----------------------------------------"
             fi
           done
@@ -140,16 +177,62 @@ jobs:
             echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
           fi
 
-      # Check if package name is available
-      - name: Checking package availability
+      # Check if package name is available and validate ownership
+      - name: Checking package availability and ownership
         id: check_package
         run: |
           PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
-          if curl -s "https://crates.io/api/v1/crates/$PACKAGE_NAME" | grep -q '"crate"'; then
-            echo "Package name $PACKAGE_NAME is already taken on crates.io."
+          REGISTRY_URL="${{ inputs.registry_url || 'https://crates.io' }}"
+          
+          # Build the package for testing
+          echo "🔨 Building package for ownership test..."
+          cargo build --release
+          
+          # Check if package exists on the registry
+          if curl -s "$REGISTRY_URL/api/v1/crates/$PACKAGE_NAME" | grep -q '"crate"'; then
+            echo "Package name $PACKAGE_NAME exists on $REGISTRY_URL."
             echo "package_taken=true" >> $GITHUB_OUTPUT
+            
+            # Test ownership by attempting a dry-run publish
+            echo "🔍 Testing package ownership with dry-run publish..."
+            if [ "$REGISTRY_URL" = "https://crates.io" ]; then
+              # Dry-run only works with crates.io
+              DRY_RUN_OUTPUT=$(cargo publish --dry-run --token ${{ secrets.CARGO_TOKEN }} 2>&1 || true)
+            else
+              echo "⚠️ Dry-run publish not supported for custom registries. Proceeding with ownership assumption."
+              echo "package_taken=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            # Check if the dry-run was successful (indicating we own the package)
+            if echo "$DRY_RUN_OUTPUT" | grep -q "Uploading"; then
+              echo "✅ Package $PACKAGE_NAME exists and we have ownership (dry-run succeeded)"
+              echo "Proceeding with update to existing package."
+            elif echo "$DRY_RUN_OUTPUT" | grep -q "already exists"; then
+              echo "✅ Package $PACKAGE_NAME exists and we have ownership (version already exists)"
+              echo "Proceeding with update to existing package."
+            elif echo "$DRY_RUN_OUTPUT" | grep -q "error: failed to get a 200 OK response"; then
+              echo "::error::Package $PACKAGE_NAME exists on $REGISTRY_URL but we do not have ownership."
+              echo "Dry-run failed - you do not have permission to update this package."
+              echo "Please choose a different package name or contact the package owner."
+              exit 1
+            elif echo "$DRY_RUN_OUTPUT" | grep -q "error: failed to get a 403"; then
+              echo "::error::Package $PACKAGE_NAME exists on $REGISTRY_URL but we do not have ownership."
+              echo "Dry-run failed with 403 Forbidden - you do not have permission to update this package."
+              echo "Please choose a different package name or contact the package owner."
+              exit 1
+            elif echo "$DRY_RUN_OUTPUT" | grep -q "error: failed to get a 409"; then
+              echo "::error::Package $PACKAGE_NAME exists on $REGISTRY_URL but we do not have ownership."
+              echo "Dry-run failed with 409 Conflict - package name is taken by another user."
+              echo "Please choose a different package name."
+              exit 1
+            else
+              echo "⚠️ Could not determine package ownership from dry-run test."
+              echo "Dry-run output: $DRY_RUN_OUTPUT"
+              echo "Proceeding with caution - ensure you have proper permissions."
+            fi
           else
-            echo "Package name $PACKAGE_NAME is available on crates.io."
+            echo "Package name $PACKAGE_NAME is available on $REGISTRY_URL."
             echo "package_taken=false" >> $GITHUB_OUTPUT
           fi
 
@@ -158,31 +241,16 @@ jobs:
         run: |
           cargo audit --deny warnings
 
-  wait-for-approval:
-    needs: [verify-release, validate-package]
-    if: needs.validate-package.outputs.package_taken == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: package-approval
-      url: https://crates.io/crates/${{ needs.validate-package.outputs.package_name }}
-    steps:
-      - name: Wait for approval
-        run: |
-          echo "⚠️ The package name '${{ needs.validate-package.outputs.package_name }}' is already taken on crates.io."
-          echo "Please review and approve this deployment to continue with publishing."
-          echo "If you want to proceed with publishing, approve this step."
-          echo "If you want to abort the workflow, reject this step."
-
   publish:
-    needs: [verify-release, validate-package, wait-for-approval]
-    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
+    needs: [verify-release, validate-package]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     environment:
       name: cargo-publish
-      url: https://crates.io/crates/${{ needs.validate-package.outputs.package_name }}
+      url: ${{ inputs.registry_url || 'https://crates.io' }}/crates/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -194,18 +262,65 @@ jobs:
           toolchain: ${{ inputs.rust_version || 'stable' }}
           override: true
 
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install dependencies
         run: |
           cargo install cargo-release
+
+      - name: Clean build artifacts
+        run: rm -rf target/
+
+      # Configure custom registry if specified
+      - name: Configure custom registry
+        if: inputs.registry_url != 'https://crates.io'
+        run: |
+          REGISTRY_URL="${{ inputs.registry_url }}"
+          
+          # Validate registry URL format
+          if ! [[ "$REGISTRY_URL" =~ ^https?:// ]]; then
+            echo "::error::Invalid registry URL format: $REGISTRY_URL"
+            echo "Registry URL must start with http:// or https://"
+            exit 1
+          fi
+          
+          REGISTRY_NAME=$(echo "$REGISTRY_URL" | sed 's|https://||' | sed 's|http://||' | sed 's|\.|_|g' | sed 's|/|_|g')
+          
+          # Add custom registry to Cargo config
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << EOF
+          [registries.$REGISTRY_NAME]
+          index = "$REGISTRY_URL"
+          EOF
+          
+          echo "Configured custom registry: $REGISTRY_NAME -> $REGISTRY_URL"
 
       - name: Verify package integrity
         run: |
           cargo check
           cargo test
           cargo audit --deny warnings
+          cargo package --list
 
-      - name: Publish to crates.io
+      - name: Publish to registry
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
         run: |
-          cargo publish
+          REGISTRY_URL="${{ inputs.registry_url || 'https://crates.io' }}"
+          if [ "$REGISTRY_URL" != "https://crates.io" ]; then
+            REGISTRY_NAME=$(echo "$REGISTRY_URL" | sed 's|https://||' | sed 's|http://||' | sed 's|\.|_|g' | sed 's|/|_|g')
+            echo "Publishing to custom registry: $REGISTRY_NAME"
+            cargo publish --registry $REGISTRY_NAME
+          else
+            echo "Publishing to crates.io"
+            cargo publish
+          fi

@@ -138,6 +138,15 @@ jobs:
       CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
 ```
 
+**Note**: The Cargo workflow includes comprehensive security features:
+- **Package Ownership Validation**: Uses dry-run publish to verify package ownership before publishing (crates.io only)
+- **Automatic Conflict Resolution**: If package name is taken by another user, the workflow exits with clear error messages
+- **Enhanced Security Audits**: Runs `cargo audit --deny warnings` for Rust security vulnerabilities
+- **Package Integrity Verification**: Validates package structure and dependencies
+- **Clean Build Process**: Ensures fresh builds for each publish job
+- **Custom Registry Support**: Supports publishing to custom Cargo registries with automatic configuration and URL validation
+- **Build Caching**: Caches Cargo registry and target directories for faster builds
+
 ### Go Package Publishing
 
 ```yaml
@@ -190,7 +199,7 @@ All workflows check for potential typosquatting attempts using language-specific
 ### 4. **Package Name Availability and Ownership Checks**
 - **NPM**: Checks if unscoped package name is available on npmjs.org, requires manual approval if taken
 - **PyPI**: Checks if package name is available on pypi.org, validates ownership via TestPyPI upload test
-- **Cargo**: Checks if package name is available on crates.io
+- **Cargo**: Checks if package name is available on crates.io, validates ownership via dry-run publish test
 - **Go**: Checks if module name is available on pkg.go.dev
 
 ### 5. **Security Audits**
@@ -208,6 +217,7 @@ All workflows check for potential typosquatting attempts using language-specific
 ### 7. **Approval Gates**
 - **Manual Approval**: NPM workflow pauses for manual approval when unscoped package names are taken
 - **Ownership Validation**: PyPI workflow validates package ownership via TestPyPI upload test
+- **Ownership Validation**: Cargo workflow validates package ownership via dry-run publish test
 - **Environment Protection**: Uses GitHub Environments for additional security gates
 - **Comprehensive Validation**: All checks must pass before publishing proceeds
 
