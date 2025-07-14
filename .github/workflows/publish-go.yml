@@ -14,6 +14,10 @@ on:
         type: string
         default: 'https://pkg.go.dev'
         description: 'Go registry URL'
+      tag:
+        required: false
+        type: string
+        description: 'Tag to use for publishing (defaults to release tag)'
     secrets:
       GOPROXY_TOKEN:
         required: true
@@ -273,14 +277,16 @@ jobs:
           GOPROXY_TOKEN: ${{ secrets.GOPROXY_TOKEN }}
         run: |
           REGISTRY_URL="${{ inputs.registry_url || 'https://pkg.go.dev' }}"
+          PUBLISH_TAG="${{ inputs.tag || github.event.release.tag_name }}"
           
           # Go modules are automatically published when a tag is pushed
           # This step is mainly for verification and documentation
           echo "✅ Go module is ready for publishing"
           echo "📦 Module will be available at: $REGISTRY_URL/${{ needs.validate-package.outputs.package_name }}"
+          echo "🏷️ Using tag: $PUBLISH_TAG"
           
           # Verify the module can be downloaded
-          go list -m ${{ needs.validate-package.outputs.package_name }}@${{ github.event.release.tag_name }}
+          go list -m ${{ needs.validate-package.outputs.package_name }}@$PUBLISH_TAG
           
           # For custom registries, additional configuration might be needed
           if [ "$REGISTRY_URL" != "https://pkg.go.dev" ]; then
