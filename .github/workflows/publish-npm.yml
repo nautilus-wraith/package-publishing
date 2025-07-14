@@ -32,473 +32,13 @@ on:
     types: [published]
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      TAG_NAME: ${{ github.event.release.tag_name }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+  verify-release:
+    uses: ./.github/workflows/verify-release.yml
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Verify tag signature
-        run: |
-          set -euo pipefail
-          # Get the tag name from the release event
-          echo "🔍 Verifying tag: $TAG_NAME"
-
-          # Fetch all history and tags
-          echo "📥 Fetching all branches and tags..."
-          git fetch --all --tags --force
-          
-          # Check if the tag is annotated
-          echo "🔎 Checking if tag is annotated..."
-          if ! git for-each-ref --format='%(objecttype)' refs/tags/"$TAG_NAME" | grep -q '^tag$'; then
-            echo "::error::Tag $TAG_NAME is not an annotated tag (likely a lightweight tag)"
-            exit 1
-          fi
-
-          # Get the signer's username from the tag
-          echo "👤 Extracting signer information..."
-          TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          echo "Raw verification output:"
-          echo "$TAG_VERIFY_OUTPUT"
-          
-          # Try different patterns to extract the signer
-          SIGNER_USERNAME=""
-          
-          # Pattern 1: GitHub noreply email from tagger line
-          if echo "$TAG_VERIFY_OUTPUT" | grep -q "tagger.*@users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'tagger\s+\K[^<]+' | xargs || echo "")
-          fi
-          
-          # Pattern 2: GitHub noreply email from signature
-          if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
-          fi
-          
-          # Pattern 3: Regular email
-          if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature from"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
-          fi
-          
-          if [ -z "$SIGNER_USERNAME" ]; then
-            echo "::error::Could not extract signer username from tag. Please ensure the tag is signed with a valid GPG key."
-            echo "Verification output:"
-            echo "$TAG_VERIFY_OUTPUT"
-            exit 1
-          fi
-          
-          echo "Found signer: $SIGNER_USERNAME"
-          echo "🔑 Fetching GPG key for user: $SIGNER_USERNAME"
-          
-          # Fetch the GPG key from GitHub
-          KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$SIGNER_USERNAME.gpg")
-          HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
-          KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
-          
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Failed to fetch GPG key for user $SIGNER_USERNAME (HTTP $HTTP_CODE)"
-            echo "Please ensure the GPG key is uploaded to GitHub at https://github.com/$SIGNER_USERNAME.gpg"
-            exit 1
-          fi
-          
-          echo "$KEY_CONTENT" | gpg --import
-          
-          # Verify the tag with the imported key
-          echo "🔐 Verifying GPG signature..."
-          if ! git tag -v "$TAG_NAME"; then
-            echo "::error::❌ Tag $TAG_NAME verification failed"
-            exit 1
-          fi
-          echo "✅ Signature verified successfully with signer's GPG key"
-
-          # Verify the tag points to a commit on main
-          echo "🔎 Verifying tag points to a commit on main..."
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
-          MAIN_COMMIT=$(git rev-parse origin/main)
-          echo "🔍 Tag commit: $TAG_COMMIT"
-          echo "🔍 Main commit: $MAIN_COMMIT"
-          
-          # Check if the tag commit is an ancestor of main
-          echo "🔁 Checking tag commit ancestry against origin/main..."
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
-            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
-            exit 1
-          fi
-          echo "✅ All tag checks passed"
-
-  validate-approvals:
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      TAG_NAME: ${{ github.event.release.tag_name }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Validate release approvals
-        run: |
-          set -euo pipefail
-          echo "🔍 Validating release approvals for tag: $TAG_NAME"
-          
-          # Get the commit SHA that the tag points to
-          TAG_COMMIT_SHA=$(git rev-parse "$TAG_NAME")
-          echo "🔍 Tag $TAG_NAME points to commit: $TAG_COMMIT_SHA"
-          
-          # Check if release approval directory exists in main branch
-          RELEASE_DIR=".github/releases/$TAG_NAME"
-          if [ ! -d "$RELEASE_DIR" ]; then
-            echo "::error::Release approval directory $RELEASE_DIR does not exist in main branch"
-            exit 1
-          fi
-          
-          # Define approval tiers and their required files
-          declare -A APPROVER_TIERS=(
-            ["first"]=".github/approvers/first"
-            ["second"]=".github/approvers/second" 
-            ["appsec"]=".github/approvers/appsec"
-          )
-          
-          # Track approvals found
-          declare -A APPROVALS_FOUND=()
-          # Track unique approvers to ensure 3 different people
-          declare -A UNIQUE_APPROVERS=()
-          # Track usernames to detect duplicates
-          declare -A USERNAME_COUNT=()
-          # Track validation errors for comprehensive reporting
-          VALIDATION_ERRORS=()
-          
-          # Validate approver lists for duplicates across tiers (checking main branch)
-          echo "🔍 Validating approver lists for duplicates across tiers (from main branch)..."
-          declare -A ALL_APPROVERS=()
-          DUPLICATE_APPROVERS=()
-          
-          for tier in "${!APPROVER_TIERS[@]}"; do
-            APPROVER_FILE="${APPROVER_TIERS[$tier]}"
-            echo "📋 Checking $tier tier approvers from main branch..."
-            
-            # Get approvers from main branch (not tagged commit)
-            APPROVER_CONTENT=$(git show "origin/main:$APPROVER_FILE" 2>/dev/null || echo "")
-            if [ -n "$APPROVER_CONTENT" ]; then
-              # Process each line without subshell
-              while IFS= read -r line; do
-                # Skip comments and empty lines
-                if [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ -n "$line" ]]; then
-                  USERNAME=$(echo "$line" | xargs)  # Trim whitespace
-                  if [ -n "$USERNAME" ]; then
-                    if [ -n "${ALL_APPROVERS[$USERNAME]:-}" ]; then
-                      DUPLICATE_APPROVERS+=("$USERNAME (found in ${ALL_APPROVERS[$USERNAME]} and $tier)")
-                      echo "  ❌ $USERNAME -> $tier tier (DUPLICATE! Already in ${ALL_APPROVERS[$USERNAME]})"
-                    else
-                      ALL_APPROVERS["$USERNAME"]="$tier"
-                      echo "  ✅ $USERNAME -> $tier tier"
-                    fi
-                  fi
-                fi
-              done <<< "$APPROVER_CONTENT"
-            else
-              echo "  ⚠️ No approvers found in $tier tier"
-            fi
-          done
-          
-          if [ ${#DUPLICATE_APPROVERS[@]} -ne 0 ]; then
-            echo "::error::Duplicate approvers found across tiers:"
-            for duplicate in "${DUPLICATE_APPROVERS[@]}"; do
-              echo "  - $duplicate"
-              VALIDATION_ERRORS+=("Duplicate approver: $duplicate")
-            done
-            echo "Each person can only be in one approval tier"
-          fi
-          
-          echo "✅ No duplicate approvers found across tiers"
-          
-          echo "📋 Checking approval files in $RELEASE_DIR (from main branch)"
-          
-          # Get all approval files in the release directory
-          echo "🔍 Listing all files in $RELEASE_DIR:"
-          ls -la "$RELEASE_DIR" || echo "Directory listing failed"
-          
-          if [ -z "$(ls -A $RELEASE_DIR 2>/dev/null)" ]; then
-            echo "::error::No approval files found in $RELEASE_DIR"
-            VALIDATION_ERRORS+=("No approval files found in $RELEASE_DIR")
-          fi
-          
-          echo "📋 Found approval files:"
-          for file in "$RELEASE_DIR"/*; do
-            if [ -f "$file" ]; then
-              echo "  - $(basename "$file")"
-            fi
-          done
-          
-          # Validate each approval file
-          for approval_file in "$RELEASE_DIR"/*; do
-            if [ -f "$approval_file" ]; then
-              USERNAME=$(basename "$approval_file")
-              echo "🔍 Validating approval file: $approval_file (username: $USERNAME)"
-              
-              # Check for duplicate usernames
-              if [ -n "${USERNAME_COUNT[$USERNAME]:-}" ]; then
-                echo "::error::Duplicate username found: $USERNAME"
-                echo "Each approval file must have a unique username. Found multiple files for: $USERNAME"
-                VALIDATION_ERRORS+=("Duplicate username found: $USERNAME")
-                continue
-              fi
-              USERNAME_COUNT["$USERNAME"]=1
-              
-              # Validate that the approval file contains the tag commit SHA
-              echo "🔍 Checking approval file content for tag commit SHA: $TAG_COMMIT_SHA"
-              
-              # Read the file from main branch and find the first non-comment line
-              FIRST_NON_COMMENT_LINE=""
-              echo "🔍 Reading file from main branch:"
-              # Get the file content and ensure it ends with a newline
-              FILE_CONTENT=$(git show "origin/main:$approval_file" && echo "")
-              echo "  Raw content: '$FILE_CONTENT'"
-              while IFS= read -r line; do
-                echo "  Processing line: '$line' (length: ${#line})"
-                # Skip empty lines and comment lines (starting with #)
-                if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
-                  FIRST_NON_COMMENT_LINE="$line"
-                  echo "  ✅ Found first non-comment line: '$line'"
-                  break
-                else
-                  echo "  ⏭️ Skipping line (empty or comment)"
-                fi
-              done <<< "$FILE_CONTENT"
-              
-              # Trim whitespace from the line
-              FIRST_NON_COMMENT_LINE=$(echo "$FIRST_NON_COMMENT_LINE" | xargs)
-              
-              if [ -z "$FIRST_NON_COMMENT_LINE" ]; then
-                echo "::error::Approval file $approval_file contains no non-comment lines in main branch"
-                echo "File content from main branch: '$(git show "origin/main:$approval_file")'"
-                echo "Expected SHA: $TAG_COMMIT_SHA"
-                echo "Each approval file must contain the SHA of the commit that the release tag points to on the first non-comment line"
-                VALIDATION_ERRORS+=("Approval file $approval_file contains no non-comment lines in main branch")
-                continue
-              fi
-              
-              if [ "$FIRST_NON_COMMENT_LINE" != "$TAG_COMMIT_SHA" ]; then
-                echo "::error::Approval file $approval_file first non-comment line does not match the tag commit SHA"
-                echo "First non-comment line from main branch: '$FIRST_NON_COMMENT_LINE'"
-                echo "Expected SHA: '$TAG_COMMIT_SHA'"
-                echo "File content from main branch: '$(git show "origin/main:$approval_file")'"
-                echo "Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line"
-                VALIDATION_ERRORS+=("Approval file $approval_file has wrong SHA: '$FIRST_NON_COMMENT_LINE' (expected: '$TAG_COMMIT_SHA')")
-                continue
-              fi
-              echo "✅ Approval file contains correct tag commit SHA on first non-comment line"
-              
-              # Get the commit that last modified this file
-              COMMIT_HASH=$(git log -1 --format="%H" -- "$approval_file")
-              if [ -z "$COMMIT_HASH" ]; then
-                echo "::error::Could not find commit for approval file: $approval_file"
-                VALIDATION_ERRORS+=("Could not find commit for approval file: $approval_file")
-                continue
-              fi
-              
-              echo "📝 File: $approval_file"
-              echo "📝 Username: $USERNAME"
-              echo "📝 Last commit: $COMMIT_HASH"
-              echo "📝 File exists: $(test -f "$approval_file" && echo "YES" || echo "NO")"
-              
-              # Get initial commit verification info to check if it's signed
-              COMMIT_VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
-              
-              # Debug: Show only signature-related lines
-              echo "🔍 Signature verification for commit $COMMIT_HASH:"
-              echo "$COMMIT_VERIFY_OUTPUT" | grep -E "(Signature made|Good signature|Can't check signature|No public key)" || echo "No signature lines found"
-              
-              # Check if commit has a signature (even if we can't verify it yet)
-              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
-                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key"
-                VALIDATION_ERRORS+=("Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key")
-                continue
-              fi
-              
-              # Use the filename as the username (since files are named after the approver)
-              COMMIT_SIGNER="$USERNAME"
-              echo "🔍 Using filename as username: $USERNAME"
-              
-              # Verify that the commit is signed (we'll validate the signature with the imported key)
-              if ! echo "$COMMIT_VERIFY_OUTPUT" | grep -q "gpg: Signature made"; then
-                echo "::error::Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key"
-                VALIDATION_ERRORS+=("Commit $COMMIT_HASH for approval file $approval_file is not signed with a GPG key")
-                continue
-              fi
-              
-              # Fetch and import the GPG key from GitHub for proper verification
-              echo "🔑 Fetching GPG key for user: $USERNAME"
-              KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$USERNAME.gpg")
-              HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
-              KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
-              
-              if [ "$HTTP_CODE" != "200" ]; then
-                echo "::error::Failed to fetch GPG key for user $USERNAME (HTTP $HTTP_CODE)"
-                echo "Please ensure the GPG key is uploaded to GitHub at https://github.com/$USERNAME.gpg"
-                VALIDATION_ERRORS+=("Failed to fetch GPG key for user $USERNAME (HTTP $HTTP_CODE)")
-                continue
-              fi
-              
-              echo "$KEY_CONTENT" | gpg --import
-              
-              # Now verify the commit with the imported key
-              echo "🔐 Verifying GPG signature for commit $COMMIT_HASH with imported key..."
-              VERIFY_OUTPUT=$(git show --show-signature "$COMMIT_HASH" 2>&1 || true)
-              echo "Verification result:"
-              echo "$VERIFY_OUTPUT" | grep -E "(Good signature|Bad signature|Can't check signature)" || echo "No verification result found"
-              
-              if ! echo "$VERIFY_OUTPUT" | grep -q "gpg: Good signature"; then
-                echo "::error::❌ Commit $COMMIT_HASH verification failed with imported GPG key"
-                echo "Verification output:"
-                echo "$VERIFY_OUTPUT"
-                VALIDATION_ERRORS+=("Commit $COMMIT_HASH verification failed with imported GPG key for user $USERNAME")
-                continue
-              fi
-              echo "✅ Commit signature verified successfully with imported GPG key"
-              
-              # Check which approval tier this user belongs to (checking main branch)
-              USER_TIER=""
-              for tier in "${!APPROVER_TIERS[@]}"; do
-                APPROVER_FILE="${APPROVER_TIERS[$tier]}"
-                # Check the approver file as it exists in main branch, not tagged commit
-                echo "🔍 Checking $tier tier file: $APPROVER_FILE (from main branch)"
-                APPROVER_CONTENT=$(git show "origin/main:$APPROVER_FILE" 2>/dev/null || echo "File not found in main branch")
-                echo "📄 Content of $APPROVER_FILE in main branch:"
-                echo "$APPROVER_CONTENT"
-                if echo "$APPROVER_CONTENT" | grep -q "^$USERNAME$"; then
-                  USER_TIER="$tier"
-                  APPROVALS_FOUND["$tier"]="$USERNAME"
-                  UNIQUE_APPROVERS["$USERNAME"]="$tier"
-                  echo "✅ User $USERNAME found in $tier tier approvers (from main branch)"
-                  break
-                fi
-              done
-              
-              if [ -z "$USER_TIER" ]; then
-                echo "::error::User $USERNAME is not found in any approver tier"
-                echo "Debug: Checked all tiers for user $USERNAME:"
-                for tier in "${!APPROVER_TIERS[@]}"; do
-                  APPROVER_FILE="${APPROVER_TIERS[$tier]}"
-                  echo "  - $tier tier ($APPROVER_FILE): $(git show "origin/main:$APPROVER_FILE" 2>/dev/null | grep -c "^$USERNAME$" || echo "0") matches"
-                done
-                VALIDATION_ERRORS+=("User $USERNAME is not found in any approver tier")
-                continue
-              fi
-            fi
-          done
-          
-          # Check that we have approvals from all required tiers
-          echo "📊 Checking required approvals..."
-          echo "🔍 Current approvals found:"
-          for tier in "${!APPROVER_TIERS[@]}"; do
-            if [ -n "${APPROVALS_FOUND[$tier]:-}" ]; then
-              echo "  - $tier tier: ${APPROVALS_FOUND[$tier]}"
-            else
-              echo "  - $tier tier: MISSING"
-            fi
-          done
-          MISSING_APPROVALS=()
-          
-          for tier in "${!APPROVER_TIERS[@]}"; do
-            if [ -z "${APPROVALS_FOUND[$tier]:-}" ]; then
-              MISSING_APPROVALS+=("$tier")
-            else
-              echo "✅ $tier tier approved by: ${APPROVALS_FOUND[$tier]}"
-            fi
-          done
-          
-          if [ ${#MISSING_APPROVALS[@]} -ne 0 ]; then
-            echo "::error::Missing approvals from the following tiers: ${MISSING_APPROVALS[*]}"
-            echo "Required: Each tier (first, second, appsec) must have at least one approval"
-            for tier in "${MISSING_APPROVALS[@]}"; do
-              VALIDATION_ERRORS+=("Missing approval from $tier tier")
-            done
-          fi
-          
-          # Validate that we have at least one approver from each tier
-          echo "🔍 Validating tier coverage..."
-          UNIQUE_COUNT=${#UNIQUE_APPROVERS[@]}
-          echo "Found $UNIQUE_COUNT unique approvers: ${!UNIQUE_APPROVERS[*]}"
-          
-          # Check that each tier has at least one approval
-          TIERS_COVERED=()
-          for username in "${!UNIQUE_APPROVERS[@]}"; do
-            TIER="${UNIQUE_APPROVERS[$username]}"
-            TIERS_COVERED+=("$TIER")
-          done
-          
-          # Check for missing tiers (this is redundant with the earlier check, so we'll just log it)
-          MISSING_TIERS=()
-          for tier in "${!APPROVER_TIERS[@]}"; do
-            if [[ ! " ${TIERS_COVERED[*]} " =~ " ${tier} " ]]; then
-              MISSING_TIERS+=("$tier")
-            fi
-          done
-          
-          if [ ${#MISSING_TIERS[@]} -ne 0 ]; then
-            echo "⚠️ Note: Missing approvals from the following tiers: ${MISSING_TIERS[*]}"
-            echo "This is already reported above"
-          fi
-          
-          # Check for multiple approvers from the same tier (optional warning)
-          TIER_COUNTS=()
-          for tier in "${TIERS_COVERED[@]}"; do
-            COUNT=$(echo "${TIERS_COVERED[@]}" | tr ' ' '\n' | grep -c "$tier")
-            if [ "$COUNT" -gt 1 ]; then
-              TIER_COUNTS+=("$tier($COUNT)")
-            fi
-          done
-          
-          if [ ${#TIER_COUNTS[@]} -ne 0 ]; then
-            echo "⚠️ Warning: Multiple approvers from same tier: ${TIER_COUNTS[*]}"
-            echo "This is allowed but ensure it's intentional"
-          fi
-          
-          # Check if we have all required tier approvals
-          ALL_TIERS_COVERED=true
-          for tier in "${!APPROVER_TIERS[@]}"; do
-            if [ -z "${APPROVALS_FOUND[$tier]:-}" ]; then
-              ALL_TIERS_COVERED=false
-              break
-            fi
-          done
-          
-          # Check if we have any validation errors
-          if [ ${#VALIDATION_ERRORS[@]} -ne 0 ]; then
-            echo "⚠️ Found ${#VALIDATION_ERRORS[@]} validation error(s):"
-            echo "=========================================="
-            for error in "${VALIDATION_ERRORS[@]}"; do
-              echo "  ❌ $error"
-            done
-            echo "=========================================="
-            
-            if [ "$ALL_TIERS_COVERED" = true ]; then
-              echo "✅ All required tiers have approvals. Proceeding despite validation errors."
-              echo "⚠️ Please fix the validation errors for future releases."
-            else
-              echo "❌ Missing required tier approvals. Please fix all validation errors and try again."
-              exit 1
-            fi
-          fi
-          
-          echo "🎉 All required approvals validated successfully!"
-          echo "📋 Final approval summary:"
-          echo "  ✅ first tier: ${APPROVALS_FOUND[first]}"
-          echo "  ✅ second tier: ${APPROVALS_FOUND[second]}"  
-          echo "  ✅ appsec tier: ${APPROVALS_FOUND[appsec]}"
-          echo "  ✅ All approvals from different people: ${!UNIQUE_APPROVERS[*]}"
-          echo "  ✅ All approver lists validated from main branch"
-          echo "  ✅ All approval files contain tag commit SHA: $TAG_COMMIT_SHA"
-
-  validate:
-    needs: [verify, validate-approvals]
+  validate-package:
+    needs: [verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -533,7 +73,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
-          registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
 
       - name: Install dependencies
         run: |
@@ -609,30 +148,30 @@ jobs:
           fi
 
   wait-for-approval:
-    needs: [validate-approvals, validate]
-    if: needs.validate.outputs.package_taken == 'true'
+    needs: [verify-release, validate-package]
+    if: needs.validate-package.outputs.package_taken == 'true'
     runs-on: ubuntu-latest
     environment:
       name: package-approval
-      url: https://www.npmjs.com/package/${{ needs.validate.outputs.package_name }}
+      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
       - name: Wait for approval
         run: |
-          echo "⚠️ The unscoped package name '${{ needs.validate.outputs.package_name }}' is already taken on npm."
+          echo "⚠️ The unscoped package name '${{ needs.validate-package.outputs.package_name }}' is already taken on npm."
           echo "Please review and approve this deployment to continue with scoped package only."
           echo "If you want to proceed with publishing only the scoped package, approve this step."
           echo "If you want to abort the workflow, reject this step."
 
   publish:
-    needs: [verify, validate, wait-for-approval]
-    if: always() && needs.verify.result == 'success' && needs.validate.result == 'success' && (needs.validate.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
+    needs: [verify-release, validate-package, wait-for-approval]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     environment:
       name: npm-publish
-      url: https://www.npmjs.com/package/${{ needs.validate.outputs.package_name }}
+      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -666,7 +205,7 @@ jobs:
 
       # Publish unscoped version if available
       - name: Publish unscoped package as well if not taken
-        if: needs.validate.outputs.package_taken == 'false'
+        if: needs.validate-package.outputs.package_taken == 'false'
         run: |
           if [[ "${{ inputs.package_access }}" != "public" && "${{ inputs.package_access }}" != "private" ]]; then
             echo "::error::package_access must be either 'public' or 'private'"

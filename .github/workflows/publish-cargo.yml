@@ -22,158 +22,40 @@ on:
     types: [published]
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify tag signature
-        run: |
-          # Get the tag name from the release event
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          
-          # Verify the tag exists and is signed
-          if ! git verify-tag "$TAG_NAME"; then
-            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
-            exit 1
-          fi
-          
-          # Verify the tag points to a commit on main
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
-          MAIN_COMMIT=$(git rev-parse origin/main)
-          
-          # Check if the tag commit is an ancestor of main
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
-            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
-            exit 1
-          fi
-
-  validate:
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ inputs.rust_version || 'stable' }}
-
-      - name: Validate Cargo.toml
-        run: |
-          if [ ! -f "Cargo.toml" ]; then
-            echo "::error::Cargo.toml file not found"
-            exit 1
-          fi
-          
-          # Check for required fields using cargo
-          cargo check --quiet || exit 1
-          
-          # Validate required fields
-          REQUIRED_FIELDS=("name" "version" "description" "authors" "license")
-          for field in "${REQUIRED_FIELDS[@]}"; do
-            if ! grep -q "^$field" Cargo.toml; then
-              echo "::error::Missing required field '$field' in Cargo.toml"
-              exit 1
-            fi
-          done
-
-      # Check for typosquatting
-      - name: Checking typosquatting patterns
-        run: |
-          PACKAGE_NAME=$(grep -m 1 '^name = ' Cargo.toml | cut -d'"' -f2)
-          echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
-          echo "----------------------------------------"
-
-          # Common typosquatting patterns with descriptions
-          declare -A PATTERNS=()
-
-          # Only add hyphen/underscore conversions if the character exists
-          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
-          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
-
-          # Add rust prefix/suffix patterns
-          PATTERNS["${PACKAGE_NAME}-rs"]="Added '-rs' suffix"
-          PATTERNS["rs-${PACKAGE_NAME}"]="Added 'rs-' prefix"
-          PATTERNS["rust-${PACKAGE_NAME}"]="Added 'rust-' prefix"
-
-          # Only add character substitutions if the character exists in the package name
-          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
-          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
-          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
-          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
-          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
-          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
-
-          FOUND_SQUATTERS=false
-          echo "📦 Found packages names similar to yours $PACKAGE_NAME"
-          echo "----------------------------------------"
-
-          for pattern in "${!PATTERNS[@]}"; do
-            if cargo search "$pattern" --limit 1 | grep -q "^$pattern"; then
-              FOUND_SQUATTERS=true
-              echo "⚠️ Package: $pattern"
-              echo "Pattern: ${PATTERNS[$pattern]}"
-              echo "URL: https://crates.io/crates/$pattern"
-              echo "----------------------------------------"
-            fi
-          done
-
-          if [ "$FOUND_SQUATTERS" = true ]; then
-            echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
-            echo "TYPOSQUATTERS_FOUND=true" >> $GITHUB_ENV
-          else
-            echo "✅ No typosquatters found."
-            echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
-          fi
-
-      # Check if package name is available
-      - name: Checking full match
-        run: |
-          PACKAGE_NAME=$(grep -m 1 '^name = ' Cargo.toml | cut -d'"' -f2)
-          if cargo search "$PACKAGE_NAME" --limit 1 | grep -q "^$PACKAGE_NAME"; then
-            echo "Package name $PACKAGE_NAME is already taken."
-            echo "PACKAGE_TAKEN=true" >> $GITHUB_ENV
-            echo "::error::Package name $PACKAGE_NAME is already taken. Exiting workflow."
-            # exit 1 # REMOVE IN PROD
-          else
-            echo "Package name $PACKAGE_NAME is available."
-            echo "PACKAGE_TAKEN=false" >> $GITHUB_ENV
-          fi
+  verify-release:
+    uses: ./.github/workflows/verify-release.yml
 
   publish:
-    needs: [verify, validate]
+    needs: [verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     environment:
       name: cargo-publish
-      url: https://crates.io/crates/${{ needs.validate.outputs.PACKAGE_NAME }}
+      url: https://crates.io/crates/${{ needs.verify-release.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ inputs.rust_version || 'stable' }}
+          override: true
 
-      - name: Build and test
+      - name: Install dependencies
         run: |
-          cargo build --verbose
-          cargo test --verbose
+          cargo install cargo-release
+
+      - name: Verify package integrity
+        run: |
+          cargo check
+          cargo test
 
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
-        run: cargo publish --verbose
+        run: |
+          cargo publish

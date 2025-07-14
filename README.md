@@ -9,6 +9,19 @@ This repository contains reusable GitHub Actions workflows for publishing packag
 - [Cargo Package Publishing](.github/workflows/publish-cargo.yml)
 - [Go Package Publishing](.github/workflows/publish-go.yml)
 
+## Shared Verification Workflow
+
+All package publishing workflows use a shared verification workflow ([verify-release.yml](.github/workflows/verify-release.yml)) that provides:
+
+- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
+- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
+- **Consistent Security**: Same verification process across all package types
+
+Each package publishing workflow then handles its own package-specific validation:
+- **Package Configuration**: Validates package.json, pyproject.toml, Cargo.toml, go.mod
+- **Typosquatting Protection**: Detects potential typosquatting attempts for each package type
+- **Dependency Validation**: Checks dependencies and security vulnerabilities
+
 ## Usage
 
 ### NPM Package Publishing
