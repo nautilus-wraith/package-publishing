@@ -1,6 +1,25 @@
 # Package Publishing Workflows
 
-This repository contains reusable GitHub Actions workflows for publishing packages to various package registries with built-in typosquatting protection.
+This repository contains reusable GitHub Actions workflows for publishing packages to various package registries with built-in typosquatting protection and standardized release verification.
+
+## Architecture Overview
+
+The package publishing system uses a **two-tier architecture** for maximum reusability and consistency:
+
+### 1. Shared Verification Workflow
+**[verify-release.yml](.github/workflows/verify-release.yml)** - A standardized, reusable workflow that handles all release verification:
+
+- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
+- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
+- **Consistent Security**: Same verification process across all package types
+- **No Package Dependencies**: Completely generic and reusable
+
+### 2. Individual Package Publishing Workflows
+Each package type has its own workflow that:
+- **Calls the shared verification workflow** for release validation
+- **Handles package-specific validation** (package.json, pyproject.toml, Cargo.toml, go.mod)
+- **Implements typosquatting protection** for that specific package type
+- **Manages package building and publishing** to the respective registry
 
 ## Available Workflows
 
@@ -9,18 +28,40 @@ This repository contains reusable GitHub Actions workflows for publishing packag
 - [Cargo Package Publishing](.github/workflows/publish-cargo.yml)
 - [Go Package Publishing](.github/workflows/publish-go.yml)
 
-## Shared Verification Workflow
+## How It Works
 
-All package publishing workflows use a shared verification workflow ([verify-release.yml](.github/workflows/verify-release.yml)) that provides:
+### Step 1: Release Verification (Shared)
+When a release is published, the individual package workflow first calls the shared verification workflow:
 
-- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
-- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
-- **Consistent Security**: Same verification process across all package types
+```yaml
+# Example from publish-npm.yml
+verify-release:
+  uses: ./.github/workflows/verify-release.yml
+```
 
-Each package publishing workflow then handles its own package-specific validation:
+The shared workflow validates:
+- ✅ Tag is signed with a valid GPG key
+- ✅ Tag points to a commit on the main branch
+- ✅ All three approval tiers have signed approvals
+- ✅ Approval files contain the correct commit SHA
+- ✅ No duplicate approvers across tiers
+
+### Step 2: Package-Specific Validation
+After verification passes, the individual workflow handles package-specific tasks:
+
 - **Package Configuration**: Validates package.json, pyproject.toml, Cargo.toml, go.mod
-- **Typosquatting Protection**: Detects potential typosquatting attempts for each package type
+- **Typosquatting Protection**: Detects potential typosquatting attempts for that package type
 - **Dependency Validation**: Checks dependencies and security vulnerabilities
+- **Package Building**: Builds the package for distribution
+- **Registry Publishing**: Publishes to the respective package registry
+
+## Benefits of This Architecture
+
+1. **Consistency**: All package types use the same release verification process
+2. **Maintainability**: Security improvements in verification apply to all packages
+3. **Reusability**: The verification workflow can be used by any package type
+4. **Separation of Concerns**: Release security vs. package-specific logic
+5. **Flexibility**: Each package type can implement its own validation rules
 
 ## Usage
 

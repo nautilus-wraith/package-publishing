@@ -3,10 +3,6 @@ run-name: "[Verify Release] Ref:${{ github.ref_name }} Event:${{ github.event_na
 
 on:
   workflow_call:
-    secrets:
-      NPM_TOKEN:
-        required: false
-        description: 'NPM token for package name validation (optional)'
 
 jobs:
   verify:
