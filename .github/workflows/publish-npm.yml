@@ -254,7 +254,7 @@ jobs:
               # Validate that the approval file contains the tag commit SHA
               echo "🔍 Checking approval file content for tag commit SHA: $TAG_COMMIT_SHA"
               
-              # Read the file and find the first non-comment line
+              # Read the file from main branch and find the first non-comment line
               FIRST_NON_COMMENT_LINE=""
               while IFS= read -r line; do
                 # Skip empty lines and comment lines (starting with #)
@@ -262,27 +262,25 @@ jobs:
                   FIRST_NON_COMMENT_LINE="$line"
                   break
                 fi
-              done < "$approval_file"
+              done < <(git show "origin/main:$approval_file")
               
               # Trim whitespace from the line
               FIRST_NON_COMMENT_LINE=$(echo "$FIRST_NON_COMMENT_LINE" | xargs)
               
               if [ -z "$FIRST_NON_COMMENT_LINE" ]; then
-                echo "::error::Approval file $approval_file contains no non-comment lines"
-                echo "File content:"
-                cat "$approval_file"
+                echo "::error::Approval file $approval_file contains no non-comment lines in main branch"
+                echo "File content from main branch: '$(git show "origin/main:$approval_file")'"
                 echo "Expected SHA: $TAG_COMMIT_SHA"
                 echo "Each approval file must contain the SHA of the commit that the release tag points to on the first non-comment line"
-                VALIDATION_ERRORS+=("Approval file $approval_file contains no non-comment lines")
+                VALIDATION_ERRORS+=("Approval file $approval_file contains no non-comment lines in main branch")
                 continue
               fi
               
               if [ "$FIRST_NON_COMMENT_LINE" != "$TAG_COMMIT_SHA" ]; then
                 echo "::error::Approval file $approval_file first non-comment line does not match the tag commit SHA"
-                echo "First non-comment line: '$FIRST_NON_COMMENT_LINE'"
+                echo "First non-comment line from main branch: '$FIRST_NON_COMMENT_LINE'"
                 echo "Expected SHA: '$TAG_COMMIT_SHA'"
-                echo "File content:"
-                cat "$approval_file"
+                echo "File content from main branch: '$(git show "origin/main:$approval_file")'"
                 echo "Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line"
                 VALIDATION_ERRORS+=("Approval file $approval_file has wrong SHA: '$FIRST_NON_COMMENT_LINE' (expected: '$TAG_COMMIT_SHA')")
                 continue
