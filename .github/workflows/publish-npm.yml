@@ -256,13 +256,21 @@ jobs:
               
               # Read the file from main branch and find the first non-comment line
               FIRST_NON_COMMENT_LINE=""
+              echo "🔍 Reading file from main branch:"
+              # Get the file content and ensure it ends with a newline
+              FILE_CONTENT=$(git show "origin/main:$approval_file" && echo "")
+              echo "  Raw content: '$FILE_CONTENT'"
               while IFS= read -r line; do
+                echo "  Processing line: '$line' (length: ${#line})"
                 # Skip empty lines and comment lines (starting with #)
                 if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
                   FIRST_NON_COMMENT_LINE="$line"
+                  echo "  ✅ Found first non-comment line: '$line'"
                   break
+                else
+                  echo "  ⏭️ Skipping line (empty or comment)"
                 fi
-              done < <(git show "origin/main:$approval_file")
+              done <<< "$FILE_CONTENT"
               
               # Trim whitespace from the line
               FIRST_NON_COMMENT_LINE=$(echo "$FIRST_NON_COMMENT_LINE" | xargs)
