@@ -158,13 +158,14 @@ The package publishing workflows include a comprehensive approval system that re
    - The workflow validates the GPG signature and verifies the signer matches the username
 
 3. **Approval Validation Process**
-   - The workflow checks that approval files exist for the release tag
+   - The workflow checks that approval files exist for the release tag in the main branch
    - Validates that each approval file was committed with a valid signed commit
    - Verifies the signer matches the username in the file name
-   - Confirms each approving user is listed in the appropriate approver tier file
+   - Confirms each approving user is listed in the appropriate approver tier file (from main branch)
    - Ensures at least one approval from each tier (first, second, appsec)
    - **Validates unique usernames**: Each approval file must have a unique username (no duplicates)
    - **Requires 3 different people**: Each tier must be approved by a different person
+   - **Validates commit SHA**: Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line
 
 4. **Example Approval Flow**
    ```
@@ -199,17 +200,39 @@ The package publishing workflows include a comprehensive approval system that re
    # For release v1.0.0
    mkdir -p .github/releases/1.0.0
    
-   # Create approval files (content doesn't matter)
-   # IMPORTANT: Each file must have a unique username
-   echo "Approved" > .github/releases/1.0.0/dev1
-   echo "Approved" > .github/releases/1.0.0/senior1
-   echo "Approved" > .github/releases/1.0.0/rkgh4096
+   # Get the commit SHA that the tag will point to
+   TAG_COMMIT_SHA=$(git rev-parse HEAD)
+   echo "Tag will point to commit: $TAG_COMMIT_SHA"
+   
+   # Create approval files with just the commit SHA
+   # IMPORTANT: Each file must have a unique username and contain only the commit SHA
+   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/dev1
+   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/senior1
+   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/rkgh4096
+   ```
+   
+   **Approval File Format**:
+   - The first non-comment line must contain exactly the commit SHA
+   - Comment lines (starting with `#`) are allowed and ignored
+   - No additional text is allowed on the same line as the SHA
+   - Whitespace around the SHA is automatically trimmed
+   
+   **Example valid approval files**:
+   ```bash
+   # This is a comment
+   abc123def456...
+   
+   # Another valid format
+   abc123def456...
    ```
    
    **Validation Rules**:
    - ✅ Each file must have a unique username (no duplicates)
    - ✅ Each tier must be approved by a different person
    - ✅ Each file must be committed with a signed commit by the respective user
+   - ✅ Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line
+   - ✅ Approvals are validated against the main branch (not the tagged commit)
+   - ✅ Comment lines (starting with #) are allowed and ignored
 
 3. **Commit with Signed Commits**
    ```bash
@@ -358,8 +381,15 @@ To use these workflows, you must set up GPG signing for your repository. Here's 
 
 The workflow will automatically:
 - Verify the tag signature and ensure it points to a commit on the main branch
-- Validate that all required approval tiers have signed approvals
+- Validate that all required approval tiers have signed approvals from the main branch
 - Check that approval files were committed with valid GPG signatures
+- Verify that each approval file contains exactly the SHA of the commit that the release tag points to on the first non-comment line
 - Proceed with package publication only after all validations pass
+
+**What happens if validation fails**:
+- If an approval file doesn't contain the exact SHA, the workflow will fail with a detailed error message
+- If the SHA in the approval file doesn't match the tag's commit, the workflow will fail
+- If approval files or approver lists have changed between approval and release, the workflow will fail
+- This ensures that approvals are tied to specific commits and cannot be bypassed
 
 
