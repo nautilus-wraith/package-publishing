@@ -34,8 +34,6 @@ on:
 jobs:
   verify-release:
     uses: ./.github/workflows/verify-release.yml
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   validate-package:
     needs: [verify-release]
