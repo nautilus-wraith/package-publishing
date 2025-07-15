@@ -217,9 +217,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Note: id-token: write is only available in the main repository
-      # When called from forked repositories, this permission will be ignored
-      id-token: write
     environment:
       name: pypi-publish
       url: https://pypi.org/project/${{ needs.validate-package.outputs.package_name }}

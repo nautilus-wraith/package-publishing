@@ -166,9 +166,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Note: id-token: write is only available in the main repository
-      # When called from forked repositories, this permission will be ignored
-      id-token: write
     environment:
       name: npm-publish
       url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
@@ -191,20 +188,7 @@ jobs:
           npm pack --dry-run
           npm audit --production
 
-      # Detect OIDC availability and set up authentication
-      - name: Setup authentication method
-        id: auth_setup
-        run: |
-          # Check if we're in the main repository and have OIDC access
-          if [[ "${{ github.repository }}" == "nautilus-wraith/package-publishing" ]]; then
-            echo "🔐 OIDC tokens available (main repository)"
-            echo "auth_method=oidc" >> $GITHUB_OUTPUT
-            echo "use_oidc=true" >> $GITHUB_OUTPUT
-          else
-            echo "🔑 Using NPM_TOKEN authentication (forked repository or external call)"
-            echo "auth_method=token" >> $GITHUB_OUTPUT
-            echo "use_oidc=false" >> $GITHUB_OUTPUT
-          fi
+
 
       # Publish scoped version
       - name: Publish scoped package
@@ -214,17 +198,7 @@ jobs:
             exit 1
           fi
           PROVENANCE_FLAG=${{ inputs.enable_provenance && '--provenance' || '' }}
-          
-          # Use OIDC token if available, otherwise use NPM_TOKEN
-          if [[ "${{ steps.auth_setup.outputs.use_oidc }}" == "true" ]]; then
-            echo "🔐 Publishing with OIDC token..."
-            # For OIDC, you would typically use a different authentication method
-            # This is a placeholder for future OIDC implementation
-            npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-          else
-            echo "🔑 Publishing with NPM_TOKEN..."
-            npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-          fi
+          npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -240,18 +214,7 @@ jobs:
           # Temporarily modify package.json to remove scope
           PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
           npm pkg set name=$PACKAGE_NAME
-          
-          # Use OIDC token if available, otherwise use NPM_TOKEN
-          if [[ "${{ steps.auth_setup.outputs.use_oidc }}" == "true" ]]; then
-            echo "🔐 Publishing unscoped package with OIDC token..."
-            # For OIDC, you would typically use a different authentication method
-            # This is a placeholder for future OIDC implementation
-            npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-          else
-            echo "🔑 Publishing unscoped package with NPM_TOKEN..."
-            npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-          fi
-          
+          npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
           # Restore original package.json
           git checkout package.json
         env:
