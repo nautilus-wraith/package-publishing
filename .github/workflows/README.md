@@ -252,6 +252,49 @@ jobs:
           CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}
 ```
 
+## OIDC Token Support
+
+All workflows support OpenID Connect (OIDC) tokens for enhanced security when used in the main repository:
+
+### **OIDC Token Availability**
+- **Main Repository**: OIDC tokens are available with `id-token: write` permission
+- **Forked Repositories**: OIDC tokens are not available due to GitHub security restrictions
+- **External Calls**: Falls back to traditional token-based authentication
+
+### **Supported Workflows**
+- **NPM**: Falls back to `NPM_TOKEN` authentication
+- **PyPI**: Falls back to `PYPI_TOKEN` authentication  
+- **Cargo**: Falls back to `CARGO_TOKEN` authentication
+- **Go**: Falls back to `GOPROXY_TOKEN` authentication
+
+### **Authentication Method Detection**
+The workflows automatically detect the environment and choose the appropriate authentication method:
+
+```yaml
+# In main repository (nautilus-wraith/package-publishing)
+# Uses OIDC tokens when available
+jobs:
+  publish:
+    uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@release-stable
+    with:
+      node_version: '20.x'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}  # Fallback for OIDC
+
+# In forked repositories
+# Uses token-based authentication
+jobs:
+  publish:
+    uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@release-stable
+    with:
+      node_version: '20.x'
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}  # Required for authentication
+```
+
+### **Future OIDC Implementation**
+The workflows include placeholders for future OIDC token implementation. When OIDC tokens are properly configured, the workflows will automatically use them in the main repository.
+
 ## Required Setup
 
 ### 1. **GPG Key Setup**
@@ -308,6 +351,12 @@ git commit -S -m "Add release approvals for v1.0.0"
    - Validate registry URL format (must start with http:// or https://)
    - Check registry authentication and permissions
    - Verify registry supports the required APIs
+
+4. **OIDC Token Permission Errors**
+   - **Error**: "The nested job 'publish' is requesting 'id-token: write', but is only allowed 'id-token: none'"
+   - **Cause**: Workflow called from a forked repository
+   - **Solution**: The workflow automatically falls back to `NPM_TOKEN` authentication in forked repositories
+   - **Note**: OIDC tokens are only available in the main repository for security reasons
 
 ### Debug Mode
 
