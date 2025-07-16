@@ -1,0 +1,136 @@
+name: Check Typosquatters
+description: Check for potential typosquatting attempts using language-specific patterns
+inputs:
+  package-name:
+    required: true
+    description: 'Package name to check'
+  registry-type:
+    required: true
+    description: 'Type of registry (npm, pypi, cargo, go)'
+  registry-url:
+    required: true
+    description: 'Registry URL to check against'
+outputs:
+  found-squatters:
+    description: 'Whether typosquatters were found'
+runs:
+  using: "composite"
+  steps:
+    - name: Check typosquatting patterns
+      shell: bash
+      run: |
+        PACKAGE_NAME="${{ inputs.package-name }}"
+        REGISTRY_TYPE="${{ inputs.registry-type }}"
+        REGISTRY_URL="${{ inputs.registry-url }}"
+        
+        echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+        echo "🔍 Using registry: $REGISTRY_URL"
+        echo "----------------------------------------"
+
+        # Common typosquatting patterns with descriptions
+        declare -A PATTERNS=()
+
+        # Only add hyphen/underscore conversions if the character exists
+        [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
+        [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
+
+        # Add language-specific patterns
+        case "$REGISTRY_TYPE" in
+          npm)
+            PATTERNS["${PACKAGE_NAME}-js"]="Added '-js' suffix"
+            PATTERNS["js-${PACKAGE_NAME}"]="Added 'js-' prefix"
+            PATTERNS["node-${PACKAGE_NAME}"]="Added 'node-' prefix"
+            ;;
+          pypi)
+            PATTERNS["${PACKAGE_NAME}-py"]="Added '-py' suffix"
+            PATTERNS["py-${PACKAGE_NAME}"]="Added 'py-' prefix"
+            PATTERNS["python-${PACKAGE_NAME}"]="Added 'python-' prefix"
+            ;;
+          cargo)
+            PATTERNS["${PACKAGE_NAME}-rs"]="Added '-rs' suffix"
+            PATTERNS["rs-${PACKAGE_NAME}"]="Added 'rs-' prefix"
+            PATTERNS["rust-${PACKAGE_NAME}"]="Added 'rust-' prefix"
+            ;;
+          go)
+            PATTERNS["${PACKAGE_NAME}-go"]="Added '-go' suffix"
+            PATTERNS["go-${PACKAGE_NAME}"]="Added 'go-' prefix"
+            PATTERNS["golang-${PACKAGE_NAME}"]="Added 'golang-' prefix"
+            ;;
+        esac
+
+        # Only add character substitutions if the character exists in the package name
+        [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
+        [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
+        [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
+        [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
+        [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
+        [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
+
+        FOUND_SQUATTERS=false
+        echo "📦 Found packages names similar to yours $PACKAGE_NAME"
+        echo "----------------------------------------"
+
+        for pattern in "${!PATTERNS[@]}"; do
+          case "$REGISTRY_TYPE" in
+            npm)
+              if npm view "$pattern" &>/dev/null; then
+                FOUND_SQUATTERS=true
+                VERSION=$(npm view "$pattern" version 2>/dev/null || echo "unknown")
+                TIME=$(npm view "$pattern" time.modified 2>/dev/null || echo "unknown")
+                AUTHOR=$(npm view "$pattern" author 2>/dev/null || echo "unknown")
+                echo "⚠️ Package: $pattern"
+                echo "Pattern: ${PATTERNS[$pattern]}"
+                echo "Version: $VERSION"
+                echo "Last Updated: $TIME"
+                echo "Author: $AUTHOR"
+                echo "URL: $REGISTRY_URL/package/$pattern"
+                echo "----------------------------------------"
+              fi
+              ;;
+            pypi)
+              if curl -s "$REGISTRY_URL/pypi/$pattern/json" | grep -q '"info"'; then
+                FOUND_SQUATTERS=true
+                VERSION=$(curl -s "$REGISTRY_URL/pypi/$pattern/json" | python -c "import sys, json; data = json.load(sys.stdin); print(data['info']['version'])" 2>/dev/null || echo "unknown")
+                AUTHOR=$(curl -s "$REGISTRY_URL/pypi/$pattern/json" | python -c "import sys, json; data = json.load(sys.stdin); print(data['info']['author'])" 2>/dev/null || echo "unknown")
+                echo "⚠️ Package: $pattern"
+                echo "Pattern: ${PATTERNS[$pattern]}"
+                echo "Version: $VERSION"
+                echo "Author: $AUTHOR"
+                echo "URL: $REGISTRY_URL/project/$pattern"
+                echo "----------------------------------------"
+              fi
+              ;;
+            cargo)
+              if curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | grep -q '"crate"'; then
+                FOUND_SQUATTERS=true
+                VERSION=$(curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['max_version'])" 2>/dev/null || echo "unknown")
+                AUTHOR=$(curl -s "$REGISTRY_URL/api/v1/crates/$pattern" | python -c "import sys, json; data = json.load(sys.stdin); print(data['crate']['repository'])" 2>/dev/null || echo "unknown")
+                echo "⚠️ Package: $pattern"
+                echo "Pattern: ${PATTERNS[$pattern]}"
+                echo "Version: $VERSION"
+                echo "Repository: $AUTHOR"
+                echo "URL: $REGISTRY_URL/crates/$pattern"
+                echo "----------------------------------------"
+              fi
+              ;;
+            go)
+              if curl -s "$REGISTRY_URL/$pattern" | grep -q "Module"; then
+                FOUND_SQUATTERS=true
+                VERSION=$(curl -s "$REGISTRY_URL/$pattern" | grep -oP 'Version:\s*\K[^\s]+' | head -1 || echo "unknown")
+                echo "⚠️ Package: $pattern"
+                echo "Pattern: ${PATTERNS[$pattern]}"
+                echo "Version: $VERSION"
+                echo "URL: $REGISTRY_URL/$pattern"
+                echo "----------------------------------------"
+              fi
+              ;;
+          esac
+        done
+
+        if [ "$FOUND_SQUATTERS" = true ]; then
+          echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
+          echo "found_squatters=true" >> $GITHUB_OUTPUT
+        else
+          echo "✅ No typosquatters found."
+          echo "found_squatters=false" >> $GITHUB_OUTPUT
+        fi 

@@ -32,72 +32,25 @@ on:
     types: [published]
 
 jobs:
-  verify:
+  verify-release:
+    uses: ./.github/workflows/verify-release.yml
+
+  validate-package:
+    needs: [verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify tag signature
-        run: |
-          set -euo pipefail
-          # Get the tag name from the release event
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          echo "🔍 Verifying tag: $TAG_NAME"
-
-          # Fetch all history and tags
-          echo "📥 Fetching all branches and tags..."
-          git fetch --all --tags --force
-          
-          # Check if the tag is annotated
-          echo "🔎 Checking if tag is annotated..."
-          if ! git for-each-ref --format='%(objecttype)' refs/tags/"$TAG_NAME" | grep -q '^tag$'; then
-            echo "::error::Tag $TAG_NAME is not an annotated tag (likely a lightweight tag)"
-            exit 1
-          fi
-
-          # Check for a valid signature (even without trusted public key)
-          echo "🔐 Verifying GPG signature..."
-          TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          if echo "$TAG_VERIFY_OUTPUT" | grep -q "BAD signature"; then
-            echo "::error::❌ Tag $TAG_NAME has a bad signature"
-            echo "$TAG_VERIFY_OUTPUT"
-            exit 1
-          elif echo "$TAG_VERIFY_OUTPUT" | grep -q "no signature found"; then
-            echo "::error::❌ Tag $TAG_NAME is not signed"
-            echo "$TAG_VERIFY_OUTPUT"
-            exit 1
-          else
-            echo "✅ Signature is present (trusted or not)"
-          fi
-
-          # Verify the tag points to a commit on main
-          echo "🔎 Verifying tag points to a commit on main..."
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
-          MAIN_COMMIT=$(git rev-parse origin/main)
-          echo "🔍 Tag commit: $TAG_COMMIT"
-          echo "🔍 Main commit: $MAIN_COMMIT"
-          
-          # Check if the tag commit is an ancestor of main
-          echo "🔁 Checking tag commit ancestry against origin/main..."
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
-            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
-            exit 1
-          fi
-          echo "✅ All tag checks passed"
-
-  validate:
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    outputs:
+      package_taken: ${{ steps.check_package.outputs.package_taken }}
+      package_name: ${{ steps.get_package_name.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Fetch all history for better versioning
+
+      - name: Get package name
+        id: get_package_name
+        run: echo "package_name=$(node -p "require('./package.json').name.replace(/@.*\//, '')")" >> $GITHUB_OUTPUT
 
       - name: Validate package.json
         run: |
@@ -118,7 +71,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
-          registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
 
       - name: Install dependencies
         run: |
@@ -182,27 +134,41 @@ jobs:
 
       # Check if unscoped package name is available
       - name: Checking full match
+        id: check_package
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
           if npm view $PACKAGE_NAME &>/dev/null; then
             echo "Global package name $PACKAGE_NAME is already taken."
-            echo "PACKAGE_TAKEN=true" >> $GITHUB_ENV
-            echo "::error::Global package name $PACKAGE_NAME is already taken. Exiting workflow."
-            # exit 1 # REMOVE IN PROD
+            echo "package_taken=true" >> $GITHUB_OUTPUT
           else
             echo "Global package name $PACKAGE_NAME is available."
-            echo "PACKAGE_TAKEN=false" >> $GITHUB_ENV
+            echo "package_taken=false" >> $GITHUB_OUTPUT
           fi
 
+  wait-for-approval:
+    needs: [verify-release, validate-package]
+    if: needs.validate-package.outputs.package_taken == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: package-approval
+      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
+    steps:
+      - name: Wait for approval
+        run: |
+          echo "⚠️ The unscoped package name '${{ needs.validate-package.outputs.package_name }}' is already taken on npm."
+          echo "Please review and approve this deployment to continue with scoped package only."
+          echo "If you want to proceed with publishing only the scoped package, approve this step."
+          echo "If you want to abort the workflow, reject this step."
+
   publish:
-    needs: [verify, validate]
+    needs: [verify-release, validate-package, wait-for-approval]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     environment:
       name: npm-publish
-      url: https://www.npmjs.com/package/${{ needs.validate.outputs.PACKAGE_NAME }}
+      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -222,6 +188,8 @@ jobs:
           npm pack --dry-run
           npm audit --production
 
+
+
       # Publish scoped version
       - name: Publish scoped package
         run: |
@@ -236,7 +204,7 @@ jobs:
 
       # Publish unscoped version if available
       - name: Publish unscoped package as well if not taken
-        if: needs.validate.outputs.PACKAGE_TAKEN == 'false'
+        if: needs.validate-package.outputs.package_taken == 'false'
         run: |
           if [[ "${{ inputs.package_access }}" != "public" && "${{ inputs.package_access }}" != "private" ]]; then
             echo "::error::package_access must be either 'public' or 'private'"

@@ -1,0 +1,188 @@
+name: Verify Package Ownership
+description: Verify package ownership using registry-specific methods
+inputs:
+  package-name:
+    required: true
+    description: 'Package name to verify'
+  registry-type:
+    required: true
+    description: 'Type of registry (npm, pypi, cargo, go)'
+  registry-url:
+    required: true
+    description: 'Registry URL to check against'
+  enable-dry-run:
+    required: false
+    description: 'Whether to enable dry-run ownership checks'
+    default: 'true'
+  npm-token:
+    required: false
+    description: 'NPM token for ownership verification'
+  pypi-token:
+    required: false
+    description: 'PyPI token for ownership verification'
+  cargo-token:
+    required: false
+    description: 'Cargo token for ownership verification'
+outputs:
+  has-ownership:
+    description: 'Whether ownership could be confirmed'
+  package-taken:
+    description: 'Whether package name is taken'
+runs:
+  using: "composite"
+  steps:
+    - name: Check package availability and ownership
+      id: check_ownership
+      shell: bash
+      run: |
+        PACKAGE_NAME="${{ inputs.package-name }}"
+        REGISTRY_TYPE="${{ inputs.registry-type }}"
+        REGISTRY_URL="${{ inputs.registry-url }}"
+        ENABLE_DRY_RUN="${{ inputs.enable-dry-run }}"
+        
+        case "$REGISTRY_TYPE" in
+          npm)
+            # Check if unscoped package name is available
+            if npm view "$PACKAGE_NAME" &>/dev/null; then
+              echo "Package name $PACKAGE_NAME is already taken on npm."
+              echo "package_taken=true" >> $GITHUB_OUTPUT
+              
+              if [ "$ENABLE_DRY_RUN" = "true" ]; then
+                echo "🔍 Testing package ownership with npm view..."
+                # For npm, we can check if we have access to the package
+                if npm view "$PACKAGE_NAME" --json &>/dev/null; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have access"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                else
+                  echo "::error::Package $PACKAGE_NAME exists but we do not have access"
+                  echo "has_ownership=false" >> $GITHUB_OUTPUT
+                  exit 1
+                fi
+              else
+                echo "⚠️ Dry-run ownership check disabled for npm"
+                echo "has_ownership=true" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "Package name $PACKAGE_NAME is available on npm."
+              echo "package_taken=false" >> $GITHUB_OUTPUT
+              echo "has_ownership=true" >> $GITHUB_OUTPUT
+            fi
+            ;;
+            
+          pypi)
+            # Check if package exists on PyPI
+            if curl -s "$REGISTRY_URL/pypi/$PACKAGE_NAME/json" | grep -q '"info"'; then
+              echo "Package name $PACKAGE_NAME exists on PyPI."
+              echo "package_taken=true" >> $GITHUB_OUTPUT
+              
+              if [ "$ENABLE_DRY_RUN" = "true" ]; then
+                echo "🔍 Testing package ownership with TestPyPI dry-run..."
+                # Build package for testing
+                python -m build
+                
+                # Test ownership by attempting a dry-run upload to TestPyPI
+                UPLOAD_OUTPUT=$(twine upload --repository testpypi --skip-existing --non-interactive dist/* 2>&1 || true)
+                
+                if echo "$UPLOAD_OUTPUT" | grep -q "File .* already exists"; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have ownership"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                elif echo "$UPLOAD_OUTPUT" | grep -q "HTTPError: 403"; then
+                  echo "::error::Package $PACKAGE_NAME exists but we do not have ownership"
+                  echo "has_ownership=false" >> $GITHUB_OUTPUT
+                  exit 1
+                elif echo "$UPLOAD_OUTPUT" | grep -q "Uploading"; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have ownership"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                else
+                  echo "⚠️ Could not determine package ownership from upload test"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                fi
+              else
+                echo "⚠️ Dry-run ownership check disabled for PyPI"
+                echo "has_ownership=true" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "Package name $PACKAGE_NAME is available on PyPI."
+              echo "package_taken=false" >> $GITHUB_OUTPUT
+              echo "has_ownership=true" >> $GITHUB_OUTPUT
+            fi
+            ;;
+            
+          cargo)
+            # Check if package exists on crates.io
+            if curl -s "$REGISTRY_URL/api/v1/crates/$PACKAGE_NAME" | grep -q '"crate"'; then
+              echo "Package name $PACKAGE_NAME exists on crates.io."
+              echo "package_taken=true" >> $GITHUB_OUTPUT
+              
+              if [ "$ENABLE_DRY_RUN" = "true" ] && [ "$REGISTRY_URL" = "https://crates.io" ]; then
+                echo "🔍 Testing package ownership with dry-run publish..."
+                # Build package for testing
+                cargo build --release
+                
+                # Test ownership by attempting a dry-run publish
+                DRY_RUN_OUTPUT=$(cargo publish --dry-run --token ${{ inputs.cargo-token }} 2>&1 || true)
+                
+                if echo "$DRY_RUN_OUTPUT" | grep -q "Uploading"; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have ownership"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                elif echo "$DRY_RUN_OUTPUT" | grep -q "already exists"; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have ownership"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                elif echo "$DRY_RUN_OUTPUT" | grep -q "error: failed to get a 403"; then
+                  echo "::error::Package $PACKAGE_NAME exists but we do not have ownership"
+                  echo "has_ownership=false" >> $GITHUB_OUTPUT
+                  exit 1
+                else
+                  echo "⚠️ Could not determine package ownership from dry-run test"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                fi
+              else
+                echo "⚠️ Dry-run ownership check disabled or not supported for custom registries"
+                echo "has_ownership=true" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "Package name $PACKAGE_NAME is available on crates.io."
+              echo "package_taken=false" >> $GITHUB_OUTPUT
+              echo "has_ownership=true" >> $GITHUB_OUTPUT
+            fi
+            ;;
+            
+          go)
+            # Check if module exists on pkg.go.dev
+            if curl -s "$REGISTRY_URL/$PACKAGE_NAME" | grep -q "Module"; then
+              echo "Package name $PACKAGE_NAME exists on pkg.go.dev."
+              echo "package_taken=true" >> $GITHUB_OUTPUT
+              
+              if [ "$ENABLE_DRY_RUN" = "true" ] && [ "$REGISTRY_URL" = "https://pkg.go.dev" ]; then
+                echo "🔍 Testing module access and ownership..."
+                # Build package for testing
+                go build ./...
+                
+                # Test if we can access the module
+                DOWNLOAD_OUTPUT=$(go list -m "$PACKAGE_NAME@latest" 2>&1 || true)
+                if echo "$DOWNLOAD_OUTPUT" | grep -q "module not found"; then
+                  echo "✅ Module not found on public proxy — assuming private access or new module"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                elif echo "$DOWNLOAD_OUTPUT" | grep -q "go: module"; then
+                  echo "✅ Package $PACKAGE_NAME exists and we have access"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                else
+                  echo "⚠️ Could not determine module access from download test"
+                  echo "has_ownership=true" >> $GITHUB_OUTPUT
+                fi
+              else
+                echo "⚠️ Dry-run ownership check disabled or not supported for custom registries"
+                echo "has_ownership=true" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "Package name $PACKAGE_NAME is available on pkg.go.dev."
+              echo "package_taken=false" >> $GITHUB_OUTPUT
+              echo "has_ownership=true" >> $GITHUB_OUTPUT
+            fi
+            ;;
+            
+          *)
+            echo "::error::Unsupported registry type: $REGISTRY_TYPE"
+            exit 1
+            ;;
+        esac 

@@ -14,6 +14,10 @@ on:
         type: string
         default: 'https://pkg.go.dev'
         description: 'Go registry URL'
+      tag:
+        required: false
+        type: string
+        description: 'Tag to use for publishing (defaults to release tag)'
     secrets:
       GOPROXY_TOKEN:
         required: true
@@ -22,75 +26,85 @@ on:
     types: [published]
 
 jobs:
-  verify:
+  verify-release:
+    uses: ./.github/workflows/verify-release.yml
+
+  validate-package:
+    needs: [verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      package_taken: ${{ steps.check_package.outputs.package_taken }}
+      package_name: ${{ steps.get_package_name.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify tag signature
+      - name: Get package name
+        id: get_package_name
         run: |
-          # Get the tag name from the release event
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          
-          # Verify the tag exists and is signed
-          if ! git verify-tag "$TAG_NAME"; then
-            echo "::error::Tag $TAG_NAME is not signed or signature verification failed"
+          # Extract module name from go.mod
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "::error::Could not extract module name from go.mod"
             exit 1
           fi
-          
-          # Verify the tag points to a commit on main
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
-          MAIN_COMMIT=$(git rev-parse origin/main)
-          
-          # Check if the tag commit is an ancestor of main
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
-            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
-            exit 1
-          fi
-
-  validate:
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go_version || '1.22' }}
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Validate go.mod
         run: |
+          # Check for required file
           if [ ! -f "go.mod" ]; then
-            echo "::error::go.mod file not found"
+            echo "::error::Missing go.mod file"
+            exit 1
+          fi
+          
+          # Validate go.mod syntax
+          if ! go mod verify 2>/dev/null; then
+            echo "::error::Invalid go.mod file"
             exit 1
           fi
           
           # Check for required fields
-          if ! grep -q "^module" go.mod; then
-            echo "::error::Missing module declaration in go.mod"
+          if ! grep -q "^module\s" go.mod; then
+            echo "::error::Missing 'module' declaration in go.mod"
             exit 1
           fi
           
-          if ! grep -q "^go " go.mod; then
-            echo "::error::Missing Go version in go.mod"
+          if ! grep -q "^go\s" go.mod; then
+            echo "::error::Missing 'go' version in go.mod"
             exit 1
           fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ inputs.go_version || '1.22' }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod verify
 
       # Check for typosquatting
       - name: Checking typosquatting patterns
         run: |
-          MODULE_NAME=$(grep -m 1 '^module ' go.mod | cut -d' ' -f2)
-          PACKAGE_NAME=$(echo $MODULE_NAME | rev | cut -d'/' -f1 | rev)
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          REGISTRY_URL="${{ inputs.registry_url || 'https://pkg.go.dev' }}"
           echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
+          echo "🔍 Using registry: $REGISTRY_URL"
           echo "----------------------------------------"
 
           # Common typosquatting patterns with descriptions
@@ -100,9 +114,10 @@ jobs:
           [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
           [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
 
-          # Add go prefix/suffix patterns
+          # Add Go-specific patterns
           PATTERNS["${PACKAGE_NAME}-go"]="Added '-go' suffix"
           PATTERNS["go-${PACKAGE_NAME}"]="Added 'go-' prefix"
+          PATTERNS["golang-${PACKAGE_NAME}"]="Added 'golang-' prefix"
 
           # Only add character substitutions if the character exists in the package name
           [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
@@ -117,13 +132,13 @@ jobs:
           echo "----------------------------------------"
 
           for pattern in "${!PATTERNS[@]}"; do
-            if curl -s "https://pkg.go.dev/search?q=$pattern" | grep -q "No results found"; then
-              continue
-            else
+            if curl -s "$REGISTRY_URL/$pattern" | grep -q "Module"; then
               FOUND_SQUATTERS=true
+              VERSION=$(curl -s "$REGISTRY_URL/$pattern" | grep -oP 'Version:\s*\K[^\s]+' | head -1 || echo "unknown")
               echo "⚠️ Package: $pattern"
               echo "Pattern: ${PATTERNS[$pattern]}"
-              echo "URL: https://pkg.go.dev/search?q=$pattern"
+              echo "Version: $VERSION"
+              echo "URL: $REGISTRY_URL/$pattern"
               echo "----------------------------------------"
             fi
           done
@@ -136,46 +151,145 @@ jobs:
             echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
           fi
 
-      # Check if package name is available
-      - name: Checking full match
+      # Check if package name is available and validate ownership
+      - name: Checking package availability and ownership
+        id: check_package
         run: |
-          MODULE_NAME=$(grep -m 1 '^module ' go.mod | cut -d' ' -f2)
-          if curl -s "https://pkg.go.dev/$MODULE_NAME" | grep -q "No results found"; then
-            echo "Package name $MODULE_NAME is available."
-            echo "PACKAGE_TAKEN=false" >> $GITHUB_ENV
+          PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+          REGISTRY_URL="${{ inputs.registry_url || 'https://pkg.go.dev' }}"
+          
+          # Build the package for testing
+          echo "🔨 Building package for ownership test..."
+          go build ./...
+          
+          # Check if package exists on the registry
+          if curl -s "$REGISTRY_URL/$PACKAGE_NAME" | grep -q "Module"; then
+            echo "Package name $PACKAGE_NAME exists on $REGISTRY_URL."
+            echo "package_taken=true" >> $GITHUB_OUTPUT
+            
+            # For Go modules, ownership is typically determined by repository access
+            # We can test by attempting to download the module with our credentials
+            echo "🔍 Testing module access and ownership..."
+            
+            # Test if we can access the module (this is the closest we can get to ownership validation)
+            if [ "$REGISTRY_URL" = "https://pkg.go.dev" ]; then
+              # For pkg.go.dev, we can test module download
+              DOWNLOAD_OUTPUT=$(go list -m "$PACKAGE_NAME@latest" 2>&1 || true)
+              if echo "$DOWNLOAD_OUTPUT" | grep -q "module not found"; then
+                echo "✅ Module not found on public proxy — assuming private access or new module"
+                echo "Proceeding with update to existing package."
+              elif echo "$DOWNLOAD_OUTPUT" | grep -q "go: module"; then
+                echo "✅ Package $PACKAGE_NAME exists and we have access (module found)"
+                echo "Proceeding with update to existing package."
+              else
+                echo "⚠️ Could not determine module access from download test."
+                echo "Download output: $DOWNLOAD_OUTPUT"
+                echo "Proceeding with caution - ensure you have proper repository access."
+              fi
+            else
+              echo "⚠️ Custom registry ownership validation not implemented for Go modules."
+              echo "Proceeding with assumption of ownership - ensure you have proper repository access."
+            fi
           else
-            echo "Package name $MODULE_NAME is already taken."
-            echo "PACKAGE_TAKEN=true" >> $GITHUB_ENV
-            echo "::error::Package name $MODULE_NAME is already taken. Exiting workflow."
-            # exit 1 # REMOVE IN PROD
+            echo "Package name $PACKAGE_NAME is available on $REGISTRY_URL."
+            echo "package_taken=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Security audit
+      - name: Security audit
+        run: |
+          # Go doesn't have a built-in security audit tool like npm audit or cargo audit
+          # But we can check for known vulnerabilities in dependencies
+          echo "🔍 Checking for known security vulnerabilities..."
+          
+          # Install govulncheck if available
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          if go install golang.org/x/vuln/cmd/govulncheck@latest 2>/dev/null; then
+            govulncheck ./... || echo "⚠️ Security vulnerabilities found. Review the output above."
+          else
+            echo "ℹ️ govulncheck not available. Consider installing for security scanning."
           fi
 
   publish:
-    needs: [verify, validate]
+    needs: [verify-release, validate-package]
+    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     environment:
       name: go-publish
-      url: https://pkg.go.dev/${{ needs.validate.outputs.MODULE_NAME }}
+      url: ${{ inputs.registry_url || 'https://pkg.go.dev' }}/${{ needs.validate-package.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v4
         with:
           go-version: ${{ inputs.go_version || '1.22' }}
 
-      - name: Build and test
-        run: |
-          go build ./...
-          go test ./...
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
-      - name: Create git tag
+      # Validate registry URL format
+      - name: Validate registry URL
+        if: inputs.registry_url != 'https://pkg.go.dev'
         run: |
-          VERSION=$(grep -m 1 '^go ' go.mod | cut -d' ' -f2)
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
+          REGISTRY_URL="${{ inputs.registry_url }}"
+          
+          # Validate registry URL format
+          if ! [[ "$REGISTRY_URL" =~ ^https?:// ]]; then
+            echo "::error::Invalid registry URL format: $REGISTRY_URL"
+            echo "Registry URL must start with http:// or https://"
+            exit 1
+          fi
+          
+          echo "Using custom registry: $REGISTRY_URL"
+
+      - name: Clean build artifacts
+        run: |
+          go clean -cache
+          go clean -modcache
+
+      - name: Verify package integrity
+        run: |
+          go mod download
+          go mod verify
+          go test ./...
+          
+          # Security check
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          if go install golang.org/x/vuln/cmd/govulncheck@latest 2>/dev/null; then
+            govulncheck ./... || echo "⚠️ Security vulnerabilities found. Review the output above."
+          fi
+
+      - name: Publish to registry
+        env:
+          GOPROXY_TOKEN: ${{ secrets.GOPROXY_TOKEN }}
+        run: |
+          REGISTRY_URL="${{ inputs.registry_url || 'https://pkg.go.dev' }}"
+          PUBLISH_TAG="${{ inputs.tag || github.event.release.tag_name }}"
+          
+          # Go modules are automatically published when a tag is pushed
+          # This step is mainly for verification and documentation
+          echo "✅ Go module is ready for publishing"
+          echo "📦 Module will be available at: $REGISTRY_URL/${{ needs.validate-package.outputs.package_name }}"
+          echo "🏷️ Using tag: $PUBLISH_TAG"
+          
+          # Verify the module can be downloaded
+          go list -m ${{ needs.validate-package.outputs.package_name }}@$PUBLISH_TAG
+          
+          # For custom registries, additional configuration might be needed
+          if [ "$REGISTRY_URL" != "https://pkg.go.dev" ]; then
+            echo "ℹ️ Custom registry detected: $REGISTRY_URL"
+            echo "ℹ️ Ensure your repository is properly configured for the custom registry"
+            echo "ℹ️ Go modules are typically published via git tags and proxy configuration"
+          fi

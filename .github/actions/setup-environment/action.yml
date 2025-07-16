@@ -1,0 +1,111 @@
+name: Setup Publishing Environment
+description: Extract and set common environment variables for package publishing workflows
+inputs:
+  package-type:
+    required: true
+    description: 'Type of package (npm, pypi, cargo, go)'
+  registry-url:
+    required: false
+    description: 'Custom registry URL (optional)'
+    default: ''
+outputs:
+  package-name:
+    description: 'Extracted package name'
+  registry-url:
+    description: 'Resolved registry URL'
+  tag-name:
+    description: 'Release tag name'
+  registry-type:
+    description: 'Type of registry (npm, pypi, cargo, go)'
+runs:
+  using: "composite"
+  steps:
+    - name: Extract package name
+      id: extract_name
+      shell: bash
+      run: |
+        case "${{ inputs.package-type }}" in
+          npm)
+            if [ -f "package.json" ]; then
+              PACKAGE_NAME=$(node -p "require('./package.json').name")
+              echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "::error::package.json not found"
+              exit 1
+            fi
+            ;;
+          pypi)
+            if [ -f "pyproject.toml" ]; then
+              PACKAGE_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['name'])")
+              echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+            elif [ -f "setup.py" ]; then
+              PACKAGE_NAME=$(python -c "import ast; tree = ast.parse(open('setup.py').read()); print([n.value.s for n in ast.walk(tree) if isinstance(n, ast.Constant) and hasattr(n, 'value') and isinstance(n.value, str) and 'name=' in str(tree)][0])" | grep -o 'name=[^,]*' | cut -d'=' -f2 | tr -d "'\"")
+              echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "::error::No pyproject.toml or setup.py found"
+              exit 1
+            fi
+            ;;
+          cargo)
+            if [ -f "Cargo.toml" ]; then
+              PACKAGE_NAME=$(grep -oP '^name\s*=\s*"\K[^"]+' Cargo.toml | head -1)
+              echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "::error::Cargo.toml not found"
+              exit 1
+            fi
+            ;;
+          go)
+            if [ -f "go.mod" ]; then
+              PACKAGE_NAME=$(grep -oP '^module\s+\K[^\s]+' go.mod | head -1)
+              echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "::error::go.mod not found"
+              exit 1
+            fi
+            ;;
+          *)
+            echo "::error::Unsupported package type: ${{ inputs.package-type }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Set registry URL
+      id: registry
+      shell: bash
+      run: |
+        case "${{ inputs.package-type }}" in
+          npm)
+            DEFAULT_REGISTRY="https://registry.npmjs.org"
+            ;;
+          pypi)
+            DEFAULT_REGISTRY="https://pypi.org"
+            ;;
+          cargo)
+            DEFAULT_REGISTRY="https://crates.io"
+            ;;
+          go)
+            DEFAULT_REGISTRY="https://pkg.go.dev"
+            ;;
+        esac
+        
+        REGISTRY_URL="${{ inputs.registry-url || DEFAULT_REGISTRY }}"
+        echo "registry_url=$REGISTRY_URL" >> $GITHUB_OUTPUT
+        echo "registry_type=${{ inputs.package-type }}" >> $GITHUB_OUTPUT
+
+    - name: Extract tag name
+      id: tag
+      shell: bash
+      run: |
+        TAG_NAME="${GITHUB_REF##*/}"
+        echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+    - name: Validate registry URL format
+      shell: bash
+      run: |
+        REGISTRY_URL="${{ steps.registry.outputs.registry_url }}"
+        if ! [[ "$REGISTRY_URL" =~ ^https?:// ]]; then
+          echo "::error::Invalid registry URL format: $REGISTRY_URL"
+          echo "Registry URL must start with http:// or https://"
+          exit 1
+        fi 
