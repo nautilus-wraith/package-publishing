@@ -162,6 +162,7 @@ jobs:
     with:
       go_version: '1.22'  # Optional, defaults to '1.22'
       registry_url: 'https://pkg.go.dev'  # Optional, defaults to 'https://pkg.go.dev'
+      tag: 'v1.0.0'  # Optional, defaults to release tag
     secrets:
       GOPROXY_TOKEN: ${{ secrets.GOPROXY_TOKEN }}
 ```
@@ -201,7 +202,7 @@ All workflows check for potential typosquatting attempts using language-specific
 
 **Language-Specific Patterns**:
 - **NPM**: `-js`, `js-`, `node-` prefixes/suffixes
-- **PyPI**: `-py`, `py-`, `python-` prefixes/suffixes  
+- **PyPI**: `-py`, `py-`, `python-` prefixes/suffixes
 - **Cargo**: `-rs`, `rs-`, `rust-` prefixes/suffixes
 - **Go**: `-go`, `go-`, `golang-` prefixes/suffixes
 
