@@ -1,36 +1,52 @@
 # Package Publishing Workflows
 
-This repository contains reusable GitHub Actions workflows for publishing packages to various package registries with built-in typosquatting protection and standardized release verification.
+This repository contains reusable GitHub Actions workflows for publishing packages to common registries with standardized release verification and built-in typosquatting protections.
+It documents the shared verification architecture, package-specific publishing workflows (NPM, PyPI, Cargo, and Go), security controls, multi-tier approvals, and required GitHub setup to run secure release pipelines end to end.
 
-## Architecture Overview
+## Index of Content
 
-The package publishing system uses a **two-tier architecture** for maximum reusability and consistency:
+- [Architecture Overview & Benefits](#architecture-overview--benefits)
+- [Available Workflows](#available-workflows)
+- [How It Works](#how-it-works)
+- [Workflow Usage by Package Type](#workflow-usage-by-package-type)
+  - [NPM workflow usage](#npm-workflow-usage)
+  - [PyPI workflow usage](#pypi-workflow-usage)
+  - [Cargo workflow usage](#cargo-workflow-usage)
+  - [Go workflow usage](#go-workflow-usage)
+- [Multi-Tier Approval System](#multi-tier-approval-system)
+- [GitHub Environment Setup](#github-environment-setup)
+- [Required Secrets](#required-secrets)
+- [Setting Up Signed Tags](#setting-up-signed-tags)
 
-### 1. Shared Verification Workflow
-**[verify-release.yml](.github/workflows/verify-release.yml)** - A standardized, reusable workflow that handles all release verification:
+## Architecture Overview & Benefits
 
-- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
-- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
-- **Consistent Security**: Same verification process across all package types
-- **No Package Dependencies**: Completely generic and reusable
+This package publishing system uses a **two-tier architecture** designed for consistency, reusability, and secure package releases across ecosystems.
 
-### 2. Individual Package Publishing Workflows
-Each package type has its own workflow that:
-- **Calls the shared verification workflow** for release validation
-- **Handles package-specific validation** (package.json, pyproject.toml, Cargo.toml, go.mod)
-- **Implements typosquatting protection** for that specific package type
-- **Manages package building and publishing** to the respective registry
+- **Tier 1: Shared Verification Workflow** (`[verify-release.yml](.github/workflows/verify-release.yml)`)
+  - **Standardized Security Gate**: Provides one reusable verification layer for all package workflows.
+  - **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys.
+  - **Multi-Tier Approval System**: Enforces signed approvals from three different approval tiers.
+  - **Consistent Validation Logic**: Applies the same release-security checks across ecosystems.
+  - **Package-Agnostic Design**: Keeps verification reusable by avoiding package-specific dependencies.
+- **Tier 2: Individual Package Publishing Workflows** (NPM, PyPI, Cargo, Go)
+  - **Verification Dependency**: Calls the shared verification workflow before any publish action.
+  - **Package-Specific Validation**:
+    - **NPM**: Validates `package.json` required fields (name, version, description, main, author, license)
+    - **PyPI**: Validates `pyproject.toml` or `setup.py` required fields (name, version, description, authors, license)
+    - **Cargo**: Validates `Cargo.toml` required fields (name, version, description, authors, license)
+    - **Go**: Validates `go.mod` required declarations (module, go version)
+  - **Typosquatting Protection**: Uses common checks (hyphen/underscore variants and character substitutions) plus ecosystem patterns (`-js`/`node-`, `-py`/`python-`, `-rs`/`rust-`, `-go`/`golang-`).
+  - **Availability and Ownership Checks**: Verifies package or module availability and ownership before publication.
+  - **Security and Integrity Checks**: Runs controls such as `npm audit --production`, Python dependency scanning, `cargo audit --deny warnings`, `govulncheck` (when available), and build/package verification commands.
+  - **Approval Gates**: Applies manual approval for NPM name conflicts, ownership/access checks for PyPI/Cargo/Go, GitHub Environment protection, and mandatory pass of all checks.
+  - **Publishing Controls**: Supports provenance where available, PyPI dual-registry publishing, NPM scoped/unscoped behavior, and tag-driven Go publishing.
 
-## Available Workflows
-
-- [NPM Package Publishing](.github/workflows/publish-npm.yml)
-- [PyPI Package Publishing](.github/workflows/publish-pypi.yml)
-- [Cargo Package Publishing](.github/workflows/publish-cargo.yml)
-- [Go Package Publishing](.github/workflows/publish-go.yml)
+This architecture delivers the main benefits of consistency, maintainability, reusability, clear separation of concerns between shared security and package logic, and flexibility for each ecosystem to apply its own validation rules.
 
 ## How It Works
 
 ### Step 1: Release Verification (Shared)
+
 When a release is published, the individual package workflow first calls the shared verification workflow:
 
 ```yaml
@@ -40,6 +56,7 @@ verify-release:
 ```
 
 The shared workflow validates:
+
 - ✅ Tag is signed with a valid GPG key
 - ✅ Tag points to a commit on the main branch
 - ✅ All three approval tiers have signed approvals
@@ -47,6 +64,7 @@ The shared workflow validates:
 - ✅ No duplicate approvers across tiers
 
 ### Step 2: Package-Specific Validation
+
 After verification passes, the individual workflow handles package-specific tasks:
 
 - **Package Configuration**: Validates package.json, pyproject.toml, Cargo.toml, go.mod
@@ -55,17 +73,18 @@ After verification passes, the individual workflow handles package-specific task
 - **Package Building**: Builds the package for distribution
 - **Registry Publishing**: Publishes to the respective package registry
 
-## Benefits of This Architecture
+## Available Workflows
 
-1. **Consistency**: All package types use the same release verification process
-2. **Maintainability**: Security improvements in verification apply to all packages
-3. **Reusability**: The verification workflow can be used by any package type
-4. **Separation of Concerns**: Release security vs. package-specific logic
-5. **Flexibility**: Each package type can implement its own validation rules
+- [NPM Package Publishing](.github/workflows/publish-npm.yml)
+- [PyPI Package Publishing](.github/workflows/publish-pypi.yml)
+- [Cargo Package Publishing](.github/workflows/publish-cargo.yml)
+- [Go Package Publishing](.github/workflows/publish-go.yml)
 
-## Usage
+## Workflow Usage by Package Type
 
-### NPM Package Publishing
+Each subsection below shows how to call the corresponding reusable workflow file and summarizes its key checks.
+
+### NPM workflow usage
 
 ```yaml
 name: Publish to NPM
@@ -87,11 +106,12 @@ jobs:
 ```
 
 **Note**: The NPM workflow includes additional safety checks:
+
 - **Package Name Availability**: If the unscoped package name is already taken on npmjs.org, the workflow will pause and require manual approval before proceeding
 - **Scoped vs Unscoped Publishing**: The workflow will always publish the scoped version (e.g., `@your-org/package-name`), and if the unscoped name is available, it will also publish that version
 - **Approval Required**: When the unscoped name is taken, you'll need to approve the deployment to continue with scoped-only publishing
 
-### PyPI Package Publishing
+### PyPI workflow usage
 
 ```yaml
 name: Publish to PyPI
@@ -113,13 +133,14 @@ jobs:
 ```
 
 **Note**: The PyPI workflow includes comprehensive security features:
+
 - **Package Ownership Validation**: Uses TestPyPI to verify package ownership before publishing
 - **Dual-Registry Publishing**: Publishes to both TestPyPI and PyPI for testing and production
 - **Automatic Conflict Resolution**: If package name is taken by another user, the workflow exits with clear error messages
 - **Provenance Support**: Enables package provenance for enhanced security (when enabled)
 - **Token Flexibility**: Supports separate TestPyPI and PyPI tokens, or uses the same token for both
 
-### Cargo Package Publishing
+### Cargo workflow usage
 
 ```yaml
 name: Publish to crates.io
@@ -139,6 +160,7 @@ jobs:
 ```
 
 **Note**: The Cargo workflow includes comprehensive security features:
+
 - **Package Ownership Validation**: Uses dry-run publish to verify package ownership before publishing (crates.io only)
 - **Automatic Conflict Resolution**: If package name is taken by another user, the workflow exits with clear error messages
 - **Enhanced Security Audits**: Runs `cargo audit --deny warnings` for Rust security vulnerabilities
@@ -147,7 +169,7 @@ jobs:
 - **Custom Registry Support**: Supports publishing to custom Cargo registries with automatic configuration and URL validation
 - **Build Caching**: Caches Cargo registry and target directories for faster builds
 
-### Go Package Publishing
+### Go workflow usage
 
 ```yaml
 name: Publish to pkg.go.dev
@@ -168,6 +190,7 @@ jobs:
 ```
 
 **Note**: The Go workflow includes comprehensive security features:
+
 - **Module Access Validation**: Tests module download access to verify ownership (pkg.go.dev only)
 - **Automatic Conflict Resolution**: If module name is taken by another user, the workflow exits with clear error messages
 - **Enhanced Security Audits**: Runs `govulncheck` for Go security vulnerabilities (when available)
@@ -176,187 +199,129 @@ jobs:
 - **Custom Registry Support**: Supports publishing to custom Go registries with URL validation
 - **Build Caching**: Caches Go modules and build artifacts for faster builds
 
-## Features
-
-All workflows include comprehensive security features:
-
-### 1. **Shared Release Verification** (via verify-release.yml)
-- **Tag Signature Verification**: Ensures release tags are signed with valid GPG keys
-- **Multi-Tier Approval System**: Validates signed approvals from three different tiers
-- **Consistent Security**: Same verification process across all package types
-- **No Package Dependencies**: Completely generic and reusable
-
-### 2. **Package-Specific Validation**
-Each workflow validates its respective package configuration:
-- **NPM**: Validates package.json with required fields (name, version, description, main, author, license)
-- **PyPI**: Validates pyproject.toml or setup.py with required fields (name, version, description, authors, license)
-- **Cargo**: Validates Cargo.toml with required fields (name, version, description, authors, license)
-- **Go**: Validates go.mod with required declarations (module, go version)
-
-### 3. **Typosquatting Protection**
-All workflows check for potential typosquatting attempts using language-specific patterns:
-
-**Common Patterns (All Languages)**:
-- Hyphen/underscore variations (e.g., `my-package` vs `my_package`)
-- Character substitutions (a→4, e→3, i→1, o→0, s→5, t→7)
-
-**Language-Specific Patterns**:
-- **NPM**: `-js`, `js-`, `node-` prefixes/suffixes
-- **PyPI**: `-py`, `py-`, `python-` prefixes/suffixes
-- **Cargo**: `-rs`, `rs-`, `rust-` prefixes/suffixes
-- **Go**: `-go`, `go-`, `golang-` prefixes/suffixes
-
-### 4. **Package Name Availability and Ownership Checks**
-- **NPM**: Checks if unscoped package name is available on npmjs.org, requires manual approval if taken
-- **PyPI**: Checks if package name is available on pypi.org, validates ownership via TestPyPI upload test
-- **Cargo**: Checks if package name is available on crates.io, validates ownership via dry-run publish test
-- **Go**: Checks if module name is available on pkg.go.dev, validates access via module download test
-
-### 5. **Security Audits**
-- **NPM**: `npm audit --production` for dependency vulnerabilities
-- **PyPI**: Dependency scanning during installation
-- **Cargo**: `cargo audit --deny warnings` for Rust security vulnerabilities
-- **Go**: `govulncheck` for Go security vulnerabilities (when available)
-
-### 6. **Package Integrity Verification**
-- **NPM**: `npm pack --dry-run` and package validation
-- **PyPI**: `twine check` for distribution file validation
-- **Cargo**: `cargo check` and `cargo test` for compilation and testing
-- **Go**: `go mod verify` and `go test ./...` for module verification
-
-### 7. **Approval Gates**
-- **Manual Approval**: NPM workflow pauses for manual approval when unscoped package names are taken
-- **Ownership Validation**: PyPI workflow validates package ownership via TestPyPI upload test
-- **Ownership Validation**: Cargo workflow validates package ownership via dry-run publish test
-- **Access Validation**: Go workflow validates module access via download test (pkg.go.dev only)
-- **Environment Protection**: Uses GitHub Environments for additional security gates
-- **Comprehensive Validation**: All checks must pass before publishing proceeds
-
-### 8. **Package Publishing**
-- **Provenance Support**: Enables package provenance where available (NPM, PyPI)
-- **Registry Publishing**: Publishes to respective package registries
-- **Dual-Registry Publishing**: PyPI workflow publishes to both TestPyPI and PyPI
-- **Scoped Publishing**: NPM workflow supports both scoped and unscoped publishing
-- **Automatic Tagging**: Go modules are automatically published when tags are pushed
-
 ## Multi-Tier Approval System
 
-The package publishing workflows include a comprehensive approval system that requires signed commits from three different approval tiers before a package can be published.
+Publishing requires signed approvals from **three different people**, one for each approval tier. Follow the sections below in order: understand the files, create them, verify format and rules, then lock them down with `CODEOWNERS`.
 
-### Approval Tiers
+### 1) Approval tiers and required files
 
-1. **First Tier (Developers)** - `.github/approvers/first`
-   - Contains usernames of developers authorized to approve releases
-   - Example: `dev1`, `dev2`, `developer123`
+**What to do:** Maintain three approver list files under `.github/approvers/`. Each file lists GitHub **usernames** (one per line) who are allowed to sign approvals for that tier. When you cut a release, you will add one approval file per person under `.github/releases/<version>/`, where `<version>` is the release tag **without** the leading `v` (for example tag `v1.0.0` → folder `.github/releases/1.0.0/`). Each approval file is named exactly after the approver’s username and must eventually contain the commit SHA the release tag points to.
 
-2. **Second Tier (Senior Developers/Tech Leads)** - `.github/approvers/second`
-   - Contains usernames of senior developers and technical leads
-   - Example: `senior1`, `techlead1`, `architect1`
+The three tiers and their files:
 
-3. **Security Tier (AppSec)** - `.github/approvers/appsec`
-   - Contains usernames of security team members
-   - Example: `rkgh4096`, `security1`, `appsec-team`
+- **First tier (Developers)**: `.github/approvers/first`
+  - Developers authorized to approve releases for this tier.
+  - Example usernames: `dev1`, `dev2`, `developer123`
+- **Second tier (Senior Developers / Tech Leads)**: `.github/approvers/second`
+  - Senior developers and technical leads for this tier.
+  - Example usernames: `senior1`, `techlead1`, `architect1`
+- **Security tier (AppSec)**: `.github/approvers/appsec`
+  - Security team members for this tier.
+  - Example usernames: `rkgh4096`, `security1`, `appsec-team`
 
-### How Approval Works
+You need **at least one approval file** in the release folder whose signer belongs to each tier, with **three distinct people** total (see section 3 for validation details).
 
-1. **Release Directory Structure**
-   - For each release tag (e.g., `v1.0.0`), create a directory: `.github/releases/1.0.0/`
-   - Inside this directory, create files named after the approving usernames
-   - Example: `.github/releases/1.0.0/rkgh4096` (file content doesn't matter)
+### 2) Setup checklist (recommended order)
 
-2. **Signed Commit Requirements**
-   - Each approval file must be committed with a signed commit
-   - The commit must be signed by the same user whose username matches the file name
-   - The workflow validates the GPG signature and verifies the signer matches the username
+**What to do:** (1) Create the tier lists if they do not exist yet. (2) For the release, create the versioned folder, write one file per approver with the tag’s commit SHA. (3) Commit using **signed** commits so the workflow can verify each signer.
 
-3. **Approval Validation Process**
-   - The workflow checks that approval files exist for the release tag in the main branch
-   - Validates that each approval file was committed with a valid signed commit
-   - Verifies the signer matches the username in the file name
-   - Confirms each approving user is listed in the appropriate approver tier file (from main branch)
-   - Ensures at least one approval from each tier (first, second, appsec)
-   - **Validates unique usernames**: Each approval file must have a unique username (no duplicates)
-   - **Requires 3 different people**: Each tier must be approved by a different person
-   - **Validates commit SHA**: Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line
+**Step 2.1 — Create and populate approver tier files**
 
-4. **Example Approval Flow**
-   ```
-   Release: v1.0.0
-   Required files:
-   - .github/releases/1.0.0/dev1 (signed by dev1)
-   - .github/releases/1.0.0/senior1 (signed by senior1)  
-   - .github/releases/1.0.0/rkgh4096 (signed by rkgh4096)
-   ```
-   
-   **Important**: Each file must have a unique username, and each tier must be approved by a different person.
+Add one GitHub username per line to each tier file. These lists live on `main` and define who may approve for each tier.
 
-### Setting Up Approval Files
+```bash
+# Add developers to first tier
+echo "dev1" >> .github/approvers/first
+echo "dev2" >> .github/approvers/first
 
-1. **Create Approver Lists**
-   ```bash
-   # Add developers to first tier
-   echo "dev1" >> .github/approvers/first
-   echo "dev2" >> .github/approvers/first
-   
-   # Add senior developers to second tier
-   echo "senior1" >> .github/approvers/second
-   echo "techlead1" >> .github/approvers/second
-   
-   # Add security team to appsec tier
-   echo "rkgh4096" >> .github/approvers/appsec
-   echo "security1" >> .github/approvers/appsec
-   ```
+# Add senior developers to second tier
+echo "senior1" >> .github/approvers/second
+echo "techlead1" >> .github/approvers/second
 
-2. **Create Release Approval Directory**
-   ```bash
-   # For release v1.0.0
-   mkdir -p .github/releases/1.0.0
-   
-   # Get the commit SHA that the tag will point to
-   TAG_COMMIT_SHA=$(git rev-parse HEAD)
-   echo "Tag will point to commit: $TAG_COMMIT_SHA"
-   
-   # Create approval files with just the commit SHA
-   # IMPORTANT: Each file must have a unique username and contain only the commit SHA
-   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/dev1
-   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/senior1
-   echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/rkgh4096
-   ```
-   
-   **Approval File Format**:
-   - The first non-comment line must contain exactly the commit SHA
-   - Comment lines (starting with `#`) are allowed and ignored
-   - No additional text is allowed on the same line as the SHA
-   - Whitespace around the SHA is automatically trimmed
-   
-   **Example valid approval files**:
-   ```bash
-   # This is a comment
-   abc123def456...
-   
-   # Another valid format
-   abc123def456...
-   ```
-   
-   **Validation Rules**:
-   - ✅ Each file must have a unique username (no duplicates)
-   - ✅ Each tier must be approved by a different person
-   - ✅ Each file must be committed with a signed commit by the respective user
-   - ✅ Each approval file must contain exactly the SHA of the commit that the release tag points to on the first non-comment line
-   - ✅ Approvals are validated against the main branch (not the tagged commit)
-   - ✅ Comment lines (starting with #) are allowed and ignored
+# Add security team to appsec tier
+echo "rkgh4096" >> .github/approvers/appsec
+echo "security1" >> .github/approvers/appsec
+```
 
-3. **Commit with Signed Commits**
-   ```bash
-   # Each file must be committed with a signed commit by the respective user
-   git add .github/releases/1.0.0/
-   git commit -S -m "Add release approvals for v1.0.0"
-   git push origin main
-   ```
+**Step 2.2 — Create release approval files**
 
-### Protection with CODEOWNERS
+Create `.github/releases/<version>/` using the tag without `v`. Resolve the commit SHA that the release tag will point to (often `HEAD` on `main` at release time). Create **one file per approver**, filename = username, body = that SHA only on the first meaningful line (comments allowed above; see section 3).
 
-The approval files are protected using GitHub's CODEOWNERS feature:
+```bash
+# For release v1.0.0 (directory name uses the tag without the "v" prefix)
+mkdir -p .github/releases/1.0.0
+
+# Commit SHA the release tag will point to
+TAG_COMMIT_SHA=$(git rev-parse HEAD)
+echo "Tag will point to commit: $TAG_COMMIT_SHA"
+
+# One file per approver; content is the commit SHA
+echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/dev1
+echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/senior1
+echo "$TAG_COMMIT_SHA" > .github/releases/1.0.0/rkgh4096
+```
+
+**Step 2.3 — Commit with signed commits**
+
+Each approval file must land on `main` in a commit **signed by the same user** as the filename (the workflow checks GPG signature vs username). In practice you may add files in separate signed commits per approver, or follow your team’s process as long as the history satisfies the verifier.
+
+```bash
+git add .github/releases/1.0.0/
+git commit -S -m "Add release approvals for v1.0.0"
+git push origin main
+```
+
+### 3) Approval file format and validation rules
+
+**Part 3.A — File format**
+
+**What to do:** Each approval file must expose exactly one commit SHA for the workflow to read: put it on the **first non-comment line**. Optional comment lines start with `#`. Do not put extra text on the SHA line; surrounding whitespace on that line is trimmed.
+
+Rules in short:
+
+- **First non-comment line**: Exactly the commit SHA the release tag points to
+- **Comments**: Lines starting with `#` are ignored
+- **SHA line**: No additional text on the same line as the SHA
+- **Whitespace**: Trimmed around the SHA
+
+Example:
+
+```bash
+# Approval for release v1.0.0
+abc123def456...
+```
+
+**Part 3.B — What the workflow validates**
+
+**What it checks:** The verifier reads approver lists and release approval files from `main`. It confirms the release directory exists for that version, each approval file has a valid **signed** commit, the **signer matches the filename**, each signer appears in the correct **tier file**, there is coverage across **first**, **second**, and **appsec**, filenames are **unique**, the three approvals are from **three different people**, and each file’s SHA matches the commit the **release tag** references.
+
+Checklist:
+
+- ✅ Approval files exist under `.github/releases/<version>/` on `main`
+- ✅ Each approval file was introduced with a valid signed commit
+- ✅ Commit signer matches the approval filename (GitHub username)
+- ✅ Each signer is listed in the matching tier file on `main`
+- ✅ At least one approval from each tier (first, second, appsec)
+- ✅ Unique usernames across approval files (no duplicate filenames)
+- ✅ Three distinct people across the three tiers
+- ✅ SHA on the first non-comment line matches the tagged release commit
+- ✅ Approver lists and approvals are evaluated using `main` (not only the tagged commit)
+
+**Example layout** for tag `v1.0.0` (each file signed by the matching user):
+
+```text
+Release: v1.0.0
+Required files:
+- .github/releases/1.0.0/dev1 (signed by dev1)
+- .github/releases/1.0.0/senior1 (signed by senior1)
+- .github/releases/1.0.0/rkgh4096 (signed by rkgh4096)
+```
+
+### 4) Protect approval configuration with CODEOWNERS
+
+**What to do:** Add rules so only trusted owners (for example AppSec) must review changes to `.github/approvers/*` and `.github/releases/*`. That reduces risk of someone rewriting approver lists or forging approval paths without review.
+
+Example `CODEOWNERS` entries:
 
 ```gitignore
 # Approval tier files - protected by security team
@@ -376,35 +341,35 @@ The NPM workflow uses GitHub Environments for additional approval gates. You mus
 
 ### Required Environments
 
-1. **`package-approval`** - Used when the unscoped package name is already taken
-   - **Purpose**: Requires manual approval before proceeding with scoped-only publishing
-   - **When triggered**: When `npm view <package-name>` returns a result (package exists)
-   - **URL**: Links to the npm package page for review
-   - **Manual approval required**: Yes - this environment will pause the workflow and wait for approval
+1. **`package-approval`** — Used when the unscoped package name is already taken
+  - **Purpose**: Requires manual approval before proceeding with scoped-only publishing
+  - **When triggered**: When `npm view <package-name>` returns a result (package exists)
+  - **URL**: Links to the npm package page for review
+  - **Manual approval required**: Yes - this environment will pause the workflow and wait for approval
 
 **Note**: The workflow also references an `npm-publish` environment in the publish job, but this is for tracking purposes only and does not require manual approval. The actual approval gates are the signed commit approvals and the package-approval environment.
 
 ### Setting Up Environments
 
 1. **Go to Repository Settings**:
-   - Navigate to your repository on GitHub
-   - Go to Settings → Environments
-
+  - Navigate to your repository on GitHub
+  - Go to Settings → Environments
 2. **Create `package-approval` Environment**:
-   - Click "New environment"
-   - Name: `package-approval`
-   - Description: "Approval required when unscoped package name is taken"
-   - URL: `https://www.npmjs.com/package/[your-package-name]`
-   - **Protection rules** (recommended):
-     - ✅ "Required reviewers" - Add team members who can approve package name conflicts
-     - ✅ "Wait timer" - Set to 0 minutes (immediate approval)
-     - ✅ "Deployment branches" - Restrict to `main` branch only
+  - Click "New environment"
+  - Name: `package-approval`
+  - Description: "Approval required when unscoped package name is taken"
+  - URL: `https://www.npmjs.com/package/[your-package-name]`
+  - **Protection rules** (recommended):
+    - ✅ "Required reviewers" - Add team members who can approve package name conflicts
+    - ✅ "Wait timer" - Set to 0 minutes (immediate approval)
+    - ✅ "Deployment branches" - Restrict to `main` branch only
 
 **Note**: The `npm-publish` environment referenced in the workflow is optional and used for tracking purposes only. It does not require manual approval setup.
 
 ### Environment Reviewers
 
 **For `package-approval`**:
+
 - Add team members who can assess package name conflicts
 - Typically includes: tech leads, architects, security team
 
@@ -433,77 +398,55 @@ Each workflow requires specific secrets to be set in your repository:
 
 ## Setting Up Signed Tags
 
-To use these workflows, you must set up GPG signing for your repository. Here's how:
+These workflows expect **signed Git tags** on releases. Approval commits must also be signed; that process lives in **[Multi-Tier Approval System](#multi-tier-approval-system)**—this section covers **GPG + tag + GitHub Release** only. What runs before any package job starts is described in **[How It Works](#how-it-works)** (Step 1) and implemented in [`verify-release.yml`](.github/workflows/verify-release.yml); failed checks are easiest to debug from that workflow’s job logs.
 
-1. **Generate a GPG Key** (if you don't have one):
-   ```bash
-   # Generate a new GPG key
-   gpg --full-generate-key
+### 1) Configure GPG signing
 
-   # Follow the prompts to create your key
-   # Recommended: RSA and RSA, 4096 bits, 0 = key does not expire
-   ```
+1. **Create a GPG key** (skip if you already have one):
 
-2. **Export Your Public Key**:
-   ```bash
-   # Replace with your email
-   gpg --armor --export your-email@example.com
-   ```
+```bash
+gpg --full-generate-key
+# Typical choice: RSA, 4096-bit; expiry per org policy
+```
 
-3. **Add GPG Key to GitHub**:
-   - Go to GitHub Settings → SSH and GPG keys
-   - Click "New GPG key"
-   - Paste your exported public key
+2. **Export your public key**, then add it under your GitHub account (**Settings → SSH and GPG keys → New GPG key**):
 
-4. **Configure Git to Use Your Key**:
-   ```bash
-   # Get your key ID
-   gpg --list-secret-keys --keyid-format LONG
+```bash
+gpg --armor --export your-email@example.com
+```
 
-   # Configure Git to use your key
-   git config --global user.signingkey YOUR_KEY_ID
-   ```
+3. **Tell Git which key to sign with** (key ID from `gpg --list-secret-keys --keyid-format LONG`):
 
-5. **Enable Branch Protection**:
-   - Go to your repository settings
-   - Navigate to Branches → Branch protection rules
-   - Add a rule for the `main` branch
-   - Enable "Require signed commits"
-   - Enable "Require signed tags"
+```bash
+git config --global user.signingkey YOUR_KEY_ID
+```
 
-6. **Creating Signed Tags**:
-   ```bash
-   # Create a signed tag
-   git tag -s v1.0.0 -m "Release v1.0.0"
+(Optional: `git config --global commit.gpgsign true` if you want every commit signed by default.)
 
-   # Push the tag
-   git push origin v1.0.0
-   ```
+### 2) Enable Branch Protection
 
-7. **Creating GitHub Releases**:
-   - Go to your repository's Releases page
-   - Click "Create a new release"
-   - Choose the signed tag you just pushed
-   - Fill in release notes
-   - Publish the release
+On the repository where you publish from, protect the branch releases are tied to (usually `main`):
 
-8. **Setting Up Release Approvals**:
-   - Create the release approval directory: `.github/releases/1.0.0/` (replace with your version)
-   - Add approval files for each tier (see Multi-Tier Approval System section)
-   - Ensure each approval file is committed with a signed commit by the respective user
-   - Push the approval files to the main branch
+1. Go to the repository’s **Settings**.
+2. Open **Branches**.
+3. Under **Branch protection rules**, click **Add branch protection rule** (or edit the existing rule for `main`).
+4. For **Branch name pattern**, enter `main` (or your release branch).
+5. Enable **Require signed commits**.
+6. Enable **Require signed tags**.
 
-The workflow will automatically:
-- Verify the tag signature and ensure it points to a commit on the main branch
-- Validate that all required approval tiers have signed approvals from the main branch
-- Check that approval files were committed with valid GPG signatures
-- Verify that each approval file contains exactly the SHA of the commit that the release tag points to on the first non-comment line
-- Proceed with package publication only after all validations pass
+Save the rule. Together with signed tags and approval commits, this keeps release-related history consistent with what `verify-release.yml` expects.
 
-**What happens if validation fails**:
-- If an approval file doesn't contain the exact SHA, the workflow will fail with a detailed error message
-- If the SHA in the approval file doesn't match the tag's commit, the workflow will fail
-- If approval files or approver lists have changed between approval and release, the workflow will fail
-- This ensures that approvals are tied to specific commits and cannot be bypassed
+### 3) Create and publish the release
 
+1. Tag the release commit and push:
 
+```bash
+git tag -s v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+```
+
+2. On GitHub: **Releases → Create a new release**, select that tag, add notes, and **Publish**. The publish workflows run on `release: types: [published]`.
+
+### 4) Approvals
+
+Add signed approval files on `main` as described in **[Multi-Tier Approval System](#multi-tier-approval-system)** (correct `.github/releases/<version>/` paths and SHAs). Order relative to tagging can follow your team process as long as approvals are valid when the workflow runs.
