@@ -4,6 +4,10 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+  id-token: write  # required for provenance (OIDC)
+
 jobs:
   publish-npm:
     uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@main

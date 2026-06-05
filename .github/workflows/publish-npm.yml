@@ -1,6 +1,9 @@
 name: Publish Package to npmjs
 run-name: "[Publish NPM] Ref:${{ github.ref_name }} Event:${{ github.event_name }}"
 
+permissions:
+  contents: read
+
 on:
   workflow_call:
     inputs:
@@ -117,6 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write  # required for provenance (OIDC)
     environment:
       name: npm-publish
       url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}

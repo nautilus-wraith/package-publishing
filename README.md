@@ -27,6 +27,10 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+  id-token: write  # required for provenance
+
 jobs:
   publish-npm:
     uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@1.0.0
@@ -42,6 +46,10 @@ name: Publish PyPI
 on:
   release:
     types: [published]
+
+permissions:
+  contents: read
+  id-token: write  # required for provenance
 
 jobs:
   publish-pypi:
