@@ -21,14 +21,9 @@ jobs:
           set -euo pipefail
           echo "🔍 Verifying tag: $TAG_NAME"
 
-          echo "📥 Fetching all branches and tags..."
-          git fetch --all --tags --force
-
-          echo "🔎 Checking if tag is annotated..."
-          if ! git for-each-ref --format='%(objecttype)' refs/tags/"$TAG_NAME" | grep -q '^tag$'; then
-            echo "::error::Tag $TAG_NAME is not an annotated tag (likely a lightweight tag)"
-            exit 1
-          fi
+          echo "📥 Fetching tag object explicitly..."
+          # Explicit refspec ensures the tag object is fetched, not just its dereferenced commit.
+          git fetch origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME" --force
 
           echo "👤 Extracting signer information..."
           TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
@@ -53,7 +48,7 @@ jobs:
           fi
 
           if [ -z "$SIGNER_USERNAME" ]; then
-            echo "::error::Could not extract signer username from tag. Please ensure the tag is signed with a valid GPG key."
+            echo "::error::Tag $TAG_NAME does not appear to be signed. Create a signed tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME'"
             echo "Verification output:"
             echo "$TAG_VERIFY_OUTPUT"
             exit 1
@@ -82,7 +77,8 @@ jobs:
           echo "✅ Signature verified successfully with signer's GPG key"
 
           echo "🔎 Verifying tag points to a commit on main..."
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME")
+          # ^{} dereferences the annotated tag object to its underlying commit SHA
+          TAG_COMMIT=$(git rev-parse "$TAG_NAME^{}")
           MAIN_COMMIT=$(git rev-parse origin/main)
           echo "🔍 Tag commit: $TAG_COMMIT"
           echo "🔍 Main commit: $MAIN_COMMIT"
