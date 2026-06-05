@@ -99,9 +99,10 @@ jobs:
           fi
 
       - name: Check typosquatting patterns
+        env:
+          PACKAGE_NAME: ${{ steps.get_package_name.outputs.package_name }}
+          REGISTRY_URL: ${{ inputs.registry_url || 'https://pypi.org' }}
         run: |
-          PACKAGE_NAME="${{ steps.get_package_name.outputs.package_name }}"
-          REGISTRY_URL="${{ inputs.registry_url || 'https://pypi.org' }}"
           echo "🔍 Checking typosquatting patterns for: $PACKAGE_NAME"
           echo "----------------------------------------"
 
@@ -168,8 +169,9 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
-          if [ "${{ inputs.enable_provenance }}" = "true" ]; then
+          if [ "$ENABLE_PROVENANCE" = "true" ]; then
             twine upload --non-interactive --verbose dist/* --provenance
           else
             twine upload --non-interactive --verbose dist/*

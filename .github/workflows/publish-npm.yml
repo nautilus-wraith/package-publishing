@@ -138,12 +138,15 @@ jobs:
           npm audit --production
 
       - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_ACCESS: ${{ inputs.package_access || 'public' }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
-          if [[ "${{ inputs.package_access }}" != "public" && "${{ inputs.package_access }}" != "private" ]]; then
+          if [[ "$PACKAGE_ACCESS" != "public" && "$PACKAGE_ACCESS" != "private" ]]; then
             echo "::error::package_access must be either 'public' or 'private'"
             exit 1
           fi
-          PROVENANCE_FLAG=${{ inputs.enable_provenance && '--provenance' || '' }}
-          npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PROVENANCE_FLAG=""
+          [ "$ENABLE_PROVENANCE" = "true" ] && PROVENANCE_FLAG="--provenance"
+          npm publish $PROVENANCE_FLAG --access "$PACKAGE_ACCESS"
