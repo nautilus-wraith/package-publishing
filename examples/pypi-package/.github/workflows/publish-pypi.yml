@@ -1,0 +1,11 @@
+name: Publish PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-pypi:
+    uses: nautilus-wraith/package-publishing/.github/workflows/publish-pypi.yml@main
+    secrets:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}

@@ -1,0 +1,11 @@
+name: Publish NPM
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-npm:
+    uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@main
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

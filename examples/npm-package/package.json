@@ -1,0 +1,11 @@
+{
+  "name": "@nautilus-wraith/hello-world",
+  "version": "0.1.0",
+  "description": "A simple hello world NPM package",
+  "main": "index.js",
+  "author": "Nautilus Wraith",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}
