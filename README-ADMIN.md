@@ -69,7 +69,10 @@ Trade-off: when `release-stable` advances (e.g. to `1.1.0`), consumers pinned to
 git tag -s 1.1.0 -m "Release 1.1.0"
 git push origin 1.1.0
 
-# 3. Advance release-stable to the new tag
+# 3. Create the GitHub Release from that tag (triggers consumer workflows)
+gh release create 1.1.0 --title "Release 1.1.0" --notes "What changed"
+
+# 4. Advance release-stable to the new tag
 git push origin 1.1.0:release-stable --force
 ```
 

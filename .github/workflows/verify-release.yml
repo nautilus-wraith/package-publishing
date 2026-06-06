@@ -44,7 +44,7 @@ jobs:
           # Verify the tag signature
           echo "🔐 Verifying tag signature..."
           if ! git tag -v "$TAG_NAME"; then
-            echo "::error::Tag $TAG_NAME signature verification failed. Sign the tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME' and push with: git push origin $TAG_NAME"
+            echo "::error::Tag $TAG_NAME signature verification failed. Sign the tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME' and push with: git push origin '$TAG_NAME'. Afterwards create the GitHub Release from that tag to trigger the publishing workflow."
             exit 1
           fi
           echo "✅ Tag signature verified"

@@ -67,15 +67,19 @@ Optional inputs (all have sensible defaults):
 | `package_access` *(NPM only)* | `public` | — |
 | `enable_provenance` | `true` | `true` |
 
-### Step 2 — Release with a signed tag
+### Step 2 — Create a signed tag and publish the release
 
 ```bash
+# Sign and push the tag
 git tag -s 1.0.0 -m "Release 1.0.0"
 git push origin 1.0.0
+
+# Create the GitHub Release from that existing tag — this triggers the workflow
+gh release create 1.0.0 --title "Release 1.0.0" --notes "What changed"
 ```
 
-Then on GitHub: **Releases → Create a new release → select the tag → Publish.**
-The workflow triggers automatically.
+> **Why this order matters**: `gh release create` (or GitHub UI → *select an existing tag*) wraps a tag you already pushed — GitHub never re-creates it, so the GPG signature is preserved and verification passes.
+> If you let GitHub create the tag for you (typing a new tag name directly in the UI release form), it creates an **unsigned** tag and verification will fail.
 
 ---
 
