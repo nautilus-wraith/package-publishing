@@ -76,6 +76,7 @@ git push origin 1.0.0
 
 # Create the GitHub Release from that existing tag — this triggers the workflow
 gh release create 1.0.0 --title "Release 1.0.0" --notes "What changed"
+# Alternatively create Release for this tag in GitHub UI
 ```
 
 > **Why this order matters**: `gh release create` (or GitHub UI → *select an existing tag*) wraps a tag you already pushed — GitHub never re-creates it, so the GPG signature is preserved and verification passes.

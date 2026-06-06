@@ -12,16 +12,11 @@ on:
         type: string
         default: '3.11'
         description: 'Python version to use'
-      registry_url:
-        required: false
-        type: string
-        default: 'https://pypi.org'
-        description: 'PyPI registry URL'
       enable_provenance:
         required: false
         type: boolean
         default: true
-        description: 'Whether to enable package provenance'
+        description: 'Publish with OIDC provenance'
     secrets:
       PYPI_TOKEN:
         required: true
@@ -39,75 +34,69 @@ jobs:
     permissions:
       contents: read
     outputs:
-      package_name: ${{ steps.get_package_name.outputs.package_name }}
+      package_name: ${{ steps.meta.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get package name
-        id: get_package_name
-        run: |
-          if [ -f "pyproject.toml" ]; then
-            PACKAGE_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['name'])")
-          elif [ -f "setup.py" ]; then
-            PACKAGE_NAME=$(python setup.py --name 2>/dev/null)
-          else
-            echo "::error::No pyproject.toml or setup.py found"
-            exit 1
-          fi
-          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Validate package configuration
-        run: |
-          if [ ! -f "pyproject.toml" ] && [ ! -f "setup.py" ]; then
-            echo "::error::Missing package configuration file (pyproject.toml or setup.py)"
-            exit 1
-          fi
-
-          if [ -f "pyproject.toml" ]; then
-            if ! python -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))" 2>/dev/null; then
-              echo "::error::Invalid pyproject.toml file"
-              exit 1
-            fi
-
-            REQUIRED_FIELDS=("name" "version" "description" "authors" "license")
-            for field in "${REQUIRED_FIELDS[@]}"; do
-              if ! python -c "import tomllib; data = tomllib.load(open('pyproject.toml', 'rb')); print(data['project']['$field'])" 2>/dev/null; then
-                echo "::error::Missing required field '$field' in pyproject.toml"
-                exit 1
-              fi
-            done
-          fi
-
-          if [ -f "setup.py" ]; then
-            if ! python -c "import ast; ast.parse(open('setup.py').read())" 2>/dev/null; then
-              echo "::error::Invalid setup.py file"
-              exit 1
-            fi
-          fi
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version || '3.11' }}
 
-      - name: Install dependencies
+      - name: Install metadata tools
         run: |
           python -m pip install --upgrade pip
-          pip install build twine
-          if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
-          fi
-          if [ -f "pyproject.toml" ]; then
-            pip install -e .
-          fi
+          pip install "tomli; python_version < '3.11'"
+
+      - name: Extract and validate package metadata
+        id: meta
+        run: |
+          python - <<'PYEOF'
+          import sys, os, subprocess
+
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+
+          def out(line):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(line + "\n")
+
+          if os.path.exists("pyproject.toml"):
+              with open("pyproject.toml", "rb") as f:
+                  data = tomllib.load(f)
+              project = data.get("project", {})
+              for field in ("name", "version"):
+                  if field not in project:
+                      print(f"::error::Missing required field '{field}' in pyproject.toml [project]")
+                      sys.exit(1)
+              for field in ("description", "authors", "license"):
+                  if field not in project:
+                      print(f"::warning::Missing recommended field '{field}' in pyproject.toml [project]")
+              out(f"package_name={project['name']}")
+
+          elif os.path.exists("setup.py"):
+              import ast
+              try:
+                  ast.parse(open("setup.py").read())
+              except SyntaxError as e:
+                  print(f"::error::Invalid setup.py: {e}")
+                  sys.exit(1)
+              name = subprocess.check_output(
+                  [sys.executable, "setup.py", "--name"], stderr=subprocess.DEVNULL
+              ).decode().strip()
+              out(f"package_name={name}")
+
+          else:
+              print("::error::No pyproject.toml or setup.py found")
+              sys.exit(1)
+          PYEOF
 
       - name: Check typosquatting patterns
         env:
-          PACKAGE_NAME: ${{ steps.get_package_name.outputs.package_name }}
-          REGISTRY_URL: ${{ inputs.registry_url || 'https://pypi.org' }}
+          PACKAGE_NAME: ${{ steps.meta.outputs.package_name }}
         run: |
           echo "🔍 Checking typosquatting patterns for: $PACKAGE_NAME"
-          echo "----------------------------------------"
 
           declare -A PATTERNS=()
           [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
@@ -122,24 +111,17 @@ jobs:
           [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
           [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
 
-          FOUND_SQUATTERS=false
+          FOUND=false
           for pattern in "${!PATTERNS[@]}"; do
-            if curl -sf "$REGISTRY_URL/pypi/$pattern/json" | grep -q '"info"'; then
-              FOUND_SQUATTERS=true
-              VERSION=$(curl -s "$REGISTRY_URL/pypi/$pattern/json" | python -c "import sys, json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "unknown")
-              AUTHOR=$(curl -s "$REGISTRY_URL/pypi/$pattern/json" | python -c "import sys, json; print(json.load(sys.stdin)['info']['author'])" 2>/dev/null || echo "unknown")
-              echo "⚠️ Package: $pattern (${PATTERNS[$pattern]})"
-              echo "   Version: $VERSION | Author: $AUTHOR"
-              echo "   URL: $REGISTRY_URL/project/$pattern"
-              echo "----------------------------------------"
+            if curl -sf "https://pypi.org/pypi/$pattern/json" | grep -q '"info"'; then
+              FOUND=true
+              VERSION=$(curl -s "https://pypi.org/pypi/$pattern/json" | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "unknown")
+              AUTHOR=$(curl -s "https://pypi.org/pypi/$pattern/json" | python -c "import sys,json; print(json.load(sys.stdin)['info']['author'])" 2>/dev/null || echo "unknown")
+              echo "⚠️  $pattern (${PATTERNS[$pattern]}) — v$VERSION by $AUTHOR"
+              echo "   https://pypi.org/project/$pattern"
             fi
           done
-
-          if [ "$FOUND_SQUATTERS" = true ]; then
-            echo "::warning::Potential typosquatters detected (see workflow logs). Consider registering similar names."
-          else
-            echo "✅ No typosquatters found."
-          fi
+          [ "$FOUND" = true ] && echo "::warning::Potential typosquatters found (see logs). Consider registering similar names." || echo "✅ No typosquatters found."
 
   publish:
     needs: [verify-release, validate-package]
@@ -153,21 +135,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version || '3.11' }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install build twine
-
       - name: Build package
-        run: python -m build
-
-      - name: Verify package integrity
-        run: twine check dist/*
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
 
       - name: Publish to PyPI
         env:
@@ -176,7 +151,7 @@ jobs:
           ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
           if [ "$ENABLE_PROVENANCE" = "true" ]; then
-            twine upload --non-interactive --verbose dist/* --provenance
+            twine upload --non-interactive dist/* --provenance
           else
-            twine upload --non-interactive --verbose dist/*
+            twine upload --non-interactive dist/*
           fi

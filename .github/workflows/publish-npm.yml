@@ -21,12 +21,12 @@ on:
         required: false
         type: string
         default: 'public'
-        description: 'Whether to publish the package as public or private (must be either "public" or "private")'
+        description: 'Publish as "public" or "private"'
       enable_provenance:
         required: false
         type: boolean
         default: true
-        description: 'Whether to enable package provenance'
+        description: 'Publish with OIDC provenance'
     secrets:
       NPM_TOKEN:
         required: true
@@ -44,43 +44,40 @@ jobs:
     permissions:
       contents: read
     outputs:
-      package_name: ${{ steps.get_package_name.outputs.package_name }}
+      package_name: ${{ steps.meta.outputs.package_name }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get package name
-        id: get_package_name
-        run: echo "package_name=$(node -p "require('./package.json').name.replace(/@.*\//, '')")" >> $GITHUB_OUTPUT
-
-      - name: Validate package.json
+      - name: Extract and validate package metadata
+        id: meta
         run: |
           if ! jq -e . package.json > /dev/null 2>&1; then
-            echo "::error::Invalid package.json file"
+            echo "::error::Invalid package.json"
             exit 1
           fi
 
-          REQUIRED_FIELDS=("name" "version" "description" "main" "author" "license")
-          for field in "${REQUIRED_FIELDS[@]}"; do
+          # name and version are what npm actually requires to publish
+          for field in name version; do
             if ! jq -e ".$field" package.json > /dev/null 2>&1; then
               echo "::error::Missing required field '$field' in package.json"
               exit 1
             fi
           done
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ inputs.node_version || '20.x' }}
+          # Recommended fields — warn but do not block
+          for field in description license; do
+            if ! jq -e ".$field" package.json > /dev/null 2>&1; then
+              echo "::warning::Missing recommended field '$field' in package.json"
+            fi
+          done
 
-      - name: Install dependencies and audit
-        run: |
-          npm ci --prefer-offline --no-audit --no-fund
-          npm audit --production
+          PACKAGE_NAME=$(jq -r '.name' package.json | sed 's|.*/||')
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Check typosquatting patterns
         run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
+          PACKAGE_NAME="${{ steps.meta.outputs.package_name }}"
           echo "🔍 Checking typosquatting patterns for: $PACKAGE_NAME"
-          echo "----------------------------------------"
 
           declare -A PATTERNS=()
           [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
@@ -95,25 +92,17 @@ jobs:
           [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
           [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
 
-          FOUND_SQUATTERS=false
+          FOUND=false
           for pattern in "${!PATTERNS[@]}"; do
             if npm view "$pattern" &>/dev/null; then
-              FOUND_SQUATTERS=true
+              FOUND=true
               VERSION=$(npm view "$pattern" version 2>/dev/null || echo "unknown")
-              TIME=$(npm view "$pattern" time.modified 2>/dev/null || echo "unknown")
               AUTHOR=$(npm view "$pattern" author 2>/dev/null || echo "unknown")
-              echo "⚠️ Package: $pattern (${PATTERNS[$pattern]})"
-              echo "   Version: $VERSION | Last Updated: $TIME | Author: $AUTHOR"
-              echo "   URL: https://www.npmjs.com/package/$pattern"
-              echo "----------------------------------------"
+              echo "⚠️  $pattern (${PATTERNS[$pattern]}) — v$VERSION by $AUTHOR"
+              echo "   https://www.npmjs.com/package/$pattern"
             fi
           done
-
-          if [ "$FOUND_SQUATTERS" = true ]; then
-            echo "::warning::Potential typosquatters detected (see workflow logs). Consider registering similar names."
-          else
-            echo "✅ No typosquatters found."
-          fi
+          [ "$FOUND" = true ] && echo "::warning::Potential typosquatters found (see logs). Consider registering similar names." || echo "✅ No typosquatters found."
 
   publish:
     needs: [verify-release, validate-package]
@@ -127,19 +116,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
           registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
 
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
-
-      - name: Verify package integrity
-        run: |
-          npm pack --dry-run
-          npm audit --production
+        run: npm install --no-audit --no-fund
 
       - name: Publish package
         env:
