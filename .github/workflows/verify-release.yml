@@ -17,73 +17,42 @@ jobs:
           fetch-depth: 0
 
       - name: Verify tag signature
+        env:
+          RELEASE_AUTHOR: ${{ github.event.release.author.login }}
         run: |
           set -euo pipefail
-          echo "🔍 Verifying tag: $TAG_NAME"
+          echo "🔍 Verifying tag: $TAG_NAME (release author: $RELEASE_AUTHOR)"
 
-          echo "📥 Fetching tag object explicitly..."
-          # Explicit refspec ensures the tag object is fetched, not just its dereferenced commit.
-          git fetch origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME" --force
+          # Delete local ref (actions/checkout may have stored the peeled commit SHA),
+          # then re-fetch so the tag object is correctly resolved.
+          git tag -d "$TAG_NAME" 2>/dev/null || true
+          git fetch --no-tags origin "+refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
 
-          echo "👤 Extracting signer information..."
-          TAG_VERIFY_OUTPUT=$(git tag -v "$TAG_NAME" 2>&1 || true)
-          echo "Raw verification output:"
-          echo "$TAG_VERIFY_OUTPUT"
-
-          SIGNER_USERNAME=""
-
-          # Pattern 1: GitHub noreply email from tagger line
-          if echo "$TAG_VERIFY_OUTPUT" | grep -q "tagger.*@users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'tagger\s+\K[^<]+' | xargs || echo "")
-          fi
-
-          # Pattern 2: GitHub noreply email from signature
-          if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "users\.noreply\.github\.com"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
-          fi
-
-          # Pattern 3: Regular email
-          if [ -z "$SIGNER_USERNAME" ] && echo "$TAG_VERIFY_OUTPUT" | grep -q "Good signature from"; then
-            SIGNER_USERNAME=$(echo "$TAG_VERIFY_OUTPUT" | grep -oP 'Good signature from "\K[^"]+' | xargs || echo "")
-          fi
-
-          if [ -z "$SIGNER_USERNAME" ]; then
-            echo "::error::Tag $TAG_NAME does not appear to be signed. Create a signed tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME'"
-            echo "Verification output:"
-            echo "$TAG_VERIFY_OUTPUT"
-            exit 1
-          fi
-
-          echo "Found signer: $SIGNER_USERNAME"
-          echo "🔑 Fetching GPG key for user: $SIGNER_USERNAME"
-
-          KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$SIGNER_USERNAME.gpg")
+          # Import the release author's GPG key from GitHub
+          echo "🔑 Fetching GPG key for: $RELEASE_AUTHOR"
+          KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$RELEASE_AUTHOR.gpg")
           HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
           KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
 
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Failed to fetch GPG key for user $SIGNER_USERNAME (HTTP $HTTP_CODE)"
-            echo "Please ensure the GPG key is uploaded to GitHub at https://github.com/$SIGNER_USERNAME.gpg"
+          if [ "$HTTP_CODE" != "200" ] || [ -z "$KEY_CONTENT" ]; then
+            echo "::error::No GPG key found for $RELEASE_AUTHOR. Upload your GPG key at https://github.com/settings/keys"
             exit 1
           fi
 
           echo "$KEY_CONTENT" | gpg --import
 
-          echo "🔐 Verifying GPG signature..."
+          # Verify the tag signature
+          echo "🔐 Verifying tag signature..."
           if ! git tag -v "$TAG_NAME"; then
-            echo "::error::❌ Tag $TAG_NAME verification failed"
+            echo "::error::Tag $TAG_NAME signature verification failed. Sign the tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME' and push with: git push origin $TAG_NAME"
             exit 1
           fi
-          echo "✅ Signature verified successfully with signer's GPG key"
+          echo "✅ Tag signature verified"
 
-          echo "🔎 Verifying tag points to a commit on main..."
-          # ^{} dereferences the annotated tag object to its underlying commit SHA
-          TAG_COMMIT=$(git rev-parse "$TAG_NAME^{}")
-          MAIN_COMMIT=$(git rev-parse origin/main)
-          echo "🔍 Tag commit: $TAG_COMMIT"
-          echo "🔍 Main commit: $MAIN_COMMIT"
-
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
+          # Verify tag points to a commit on main
+          echo "🔎 Verifying tag is on main..."
+          PEELED_SHA=$(git rev-parse "$TAG_NAME^{}")
+          if ! git merge-base --is-ancestor "$PEELED_SHA" "$(git rev-parse origin/main)"; then
             echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
             exit 1
           fi
