@@ -138,7 +138,7 @@ git config --global user.signingkey YOUR_KEY_ID
 | `node_version` | string | `20.x` | Node.js version |
 | `registry_url` | string | `https://registry.npmjs.org` | Target registry |
 | `package_access` | string | `public` | `public` or `private` |
-| `enable_provenance` | boolean | `true` | Publish with `--provenance` |
+| `enable_provenance` | boolean | `true` | Attach a signed provenance statement linking the package to the exact workflow run and commit it was built from. Requires a public repository. |
 | `publish_unscoped` | boolean | `false` | For scoped packages: add `publish-unscoped` gate job to optionally claim the unscoped name |
 
 Secret: `NPM_TOKEN` (required)

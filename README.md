@@ -44,7 +44,7 @@ Optional inputs:
 | `node_version` | `20.x` | Node.js version |
 | `registry_url` | `https://registry.npmjs.org` | Target registry |
 | `package_access` | `public` | npm package visibility: `public` (anyone can install) or `private` (npm org members only, requires paid npm plan). Scoped packages default to private on npm without this flag — set to `public` for open-source packages. |
-| `enable_provenance` | `true` | Publish with OIDC provenance |
+| `enable_provenance` | `true` | Attach a signed provenance statement to the published package, linking it to the exact GitHub Actions run and commit it was built from. Requires a public repository. |
 | `publish_unscoped` | `false` | For scoped packages: enable the unscoped name gate |
 
 > `enable_provenance` requires the repository to be **public** and `package.json` to have a `repository.url` field. Set it to `false` for private repositories.
