@@ -47,7 +47,7 @@ jobs:
     env:
       TAG_NAME: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -103,7 +103,7 @@ jobs:
       is_scoped: ${{ steps.meta.outputs.is_scoped }}
       unscoped_available: ${{ steps.meta.outputs.unscoped_available }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Extract and validate package metadata
         id: meta
@@ -184,9 +184,9 @@ jobs:
       name: npm-publish
       url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
           registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
@@ -224,9 +224,9 @@ jobs:
       name: npm-publish-unscoped
       url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
           registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
