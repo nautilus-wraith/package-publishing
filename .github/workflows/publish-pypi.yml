@@ -92,36 +92,6 @@ jobs:
               sys.exit(1)
           PYEOF
 
-      - name: Check typosquatting patterns
-        env:
-          PACKAGE_NAME: ${{ steps.meta.outputs.package_name }}
-        run: |
-          echo "🔍 Checking typosquatting patterns for: $PACKAGE_NAME"
-
-          declare -A PATTERNS=()
-          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
-          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
-          PATTERNS["${PACKAGE_NAME}-py"]="Added '-py' suffix"
-          PATTERNS["py-${PACKAGE_NAME}"]="Added 'py-' prefix"
-          PATTERNS["python-${PACKAGE_NAME}"]="Added 'python-' prefix"
-          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
-          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
-          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
-          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
-          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
-          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
-
-          FOUND=false
-          for pattern in "${!PATTERNS[@]}"; do
-            if curl -sf "https://pypi.org/pypi/$pattern/json" | grep -q '"info"'; then
-              FOUND=true
-              VERSION=$(curl -s "https://pypi.org/pypi/$pattern/json" | python -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "unknown")
-              AUTHOR=$(curl -s "https://pypi.org/pypi/$pattern/json" | python -c "import sys,json; print(json.load(sys.stdin)['info']['author'])" 2>/dev/null || echo "unknown")
-              echo "⚠️  $pattern (${PATTERNS[$pattern]}) — v$VERSION by $AUTHOR"
-              echo "   https://pypi.org/project/$pattern"
-            fi
-          done
-          [ "$FOUND" = true ] && echo "::warning::Potential typosquatters found (see logs). Consider registering similar names." || echo "✅ No typosquatters found."
 
   publish:
     needs: [verify-release, validate-package]
