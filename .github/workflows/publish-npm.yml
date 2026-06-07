@@ -59,6 +59,7 @@ jobs:
         id: meta
         env:
           PUBLISH_UNSCOPED: ${{ inputs.publish_unscoped }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
           if ! jq -e . package.json > /dev/null 2>&1; then
             echo "::error::Invalid package.json"
@@ -77,6 +78,13 @@ jobs:
               echo "::warning::Missing recommended field '$field' in package.json"
             fi
           done
+
+          if [ "$ENABLE_PROVENANCE" = "true" ]; then
+            REPO_URL=$(jq -r '.repository.url // .repository // ""' package.json)
+            if [ -z "$REPO_URL" ] || [ "$REPO_URL" = "null" ]; then
+              echo "::warning::Missing 'repository.url' in package.json — required when publishing with provenance (enable_provenance: true)"
+            fi
+          fi
 
           FULL_NAME=$(jq -r '.name' package.json)
           PACKAGE_NAME=$(echo "$FULL_NAME" | sed 's|.*/||')
