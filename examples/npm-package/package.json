@@ -1,0 +1,15 @@
+{
+  "name": "@nautilus-wraith/hello-world",
+  "version": "0.1.0",
+  "description": "A simple hello world NPM package",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dso-migrateme/test-publishing"
+  },
+  "author": "Nautilus Wraith",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

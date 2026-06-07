@@ -1,6 +1,9 @@
 name: Publish Package to npmjs
 run-name: "[Publish NPM] Ref:${{ github.ref_name }} Event:${{ github.event_name }}"
 
+permissions:
+  contents: read
+
 on:
   workflow_call:
     inputs:
@@ -18,12 +21,17 @@ on:
         required: false
         type: string
         default: 'public'
-        description: 'Whether to publish the package as public or private (must be either "public" or "private")'
+        description: 'Publish as "public" or "private"'
       enable_provenance:
         required: false
         type: boolean
         default: true
-        description: 'Whether to enable package provenance'
+        description: 'Publish with OIDC provenance'
+      publish_unscoped:
+        required: false
+        type: boolean
+        default: false
+        description: 'For scoped packages: also publish under the unscoped name'
     secrets:
       NPM_TOKEN:
         required: true
@@ -33,7 +41,57 @@ on:
 
 jobs:
   verify-release:
-    uses: ./.github/workflows/verify-release.yml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag signature
+        env:
+          RELEASE_AUTHOR: ${{ github.event.release.author.login }}
+        run: |
+          set -euo pipefail
+          echo "🔍 Verifying tag: $TAG_NAME (release author: $RELEASE_AUTHOR)"
+
+          # Delete local ref (actions/checkout may have stored the peeled commit SHA),
+          # then re-fetch so the tag object is correctly resolved.
+          git tag -d "$TAG_NAME" 2>/dev/null || true
+          git fetch --no-tags origin "+refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+
+          # Import the release author's GPG key from GitHub
+          echo "🔑 Fetching GPG key for: $RELEASE_AUTHOR"
+          KEY_RESPONSE=$(curl -s -w "\n%{http_code}" "https://github.com/$RELEASE_AUTHOR.gpg")
+          HTTP_CODE=$(echo "$KEY_RESPONSE" | tail -n1)
+          KEY_CONTENT=$(echo "$KEY_RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ] || [ -z "$KEY_CONTENT" ]; then
+            echo "::error::No GPG key found for $RELEASE_AUTHOR. Upload your GPG key at https://github.com/settings/keys"
+            exit 1
+          fi
+
+          echo "$KEY_CONTENT" | gpg --import
+
+          # Verify the tag signature
+          echo "🔐 Verifying tag signature..."
+          if ! git tag -v "$TAG_NAME"; then
+            echo "::error::Tag $TAG_NAME signature verification failed. Sign the tag with: git tag -s $TAG_NAME -m 'Release $TAG_NAME' and push with: git push origin '$TAG_NAME'. Afterwards create the GitHub Release from that tag to trigger the publishing workflow."
+            exit 1
+          fi
+          echo "✅ Tag signature verified"
+
+          # Verify tag points to a commit on main
+          echo "🔎 Verifying tag is on main..."
+          PEELED_SHA=$(git rev-parse "$TAG_NAME^{}")
+          if ! git merge-base --is-ancestor "$PEELED_SHA" "$(git rev-parse origin/main)"; then
+            echo "::error::Tag $TAG_NAME does not point to a commit on main branch"
+            exit 1
+          fi
+          echo "✅ All tag checks passed"
 
   validate-package:
     needs: [verify-release]
@@ -41,181 +99,159 @@ jobs:
     permissions:
       contents: read
     outputs:
-      package_taken: ${{ steps.check_package.outputs.package_taken }}
-      package_name: ${{ steps.get_package_name.outputs.package_name }}
+      package_name: ${{ steps.meta.outputs.package_name }}
+      is_scoped: ${{ steps.meta.outputs.is_scoped }}
+      unscoped_available: ${{ steps.meta.outputs.unscoped_available }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch all history for better versioning
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Get package name
-        id: get_package_name
-        run: echo "package_name=$(node -p "require('./package.json').name.replace(/@.*\//, '')")" >> $GITHUB_OUTPUT
-
-      - name: Validate package.json
+      - name: Extract and validate package metadata
+        id: meta
+        env:
+          PUBLISH_UNSCOPED: ${{ inputs.publish_unscoped }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
           if ! jq -e . package.json > /dev/null 2>&1; then
-            echo "::error::Invalid package.json file"
+            echo "::error::Invalid package.json"
             exit 1
           fi
-          
-          # Check for required fields
-          REQUIRED_FIELDS=("name" "version" "description" "main" "author" "license")
-          for field in "${REQUIRED_FIELDS[@]}"; do
+
+          for field in name version; do
             if ! jq -e ".$field" package.json > /dev/null 2>&1; then
               echo "::error::Missing required field '$field' in package.json"
               exit 1
             fi
           done
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ inputs.node_version || '20.x' }}
-
-      - name: Install dependencies
-        run: |
-          npm ci --prefer-offline --no-audit --no-fund
-          npm audit --production
-
-      # Check for typosquatting
-      - name: Checking typosquatting patterns
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
-          echo "🔍 Checking typosquatting patterns of your package name: $PACKAGE_NAME"
-          echo "----------------------------------------"
-
-          # Common typosquatting patterns with descriptions
-          declare -A PATTERNS=()
-
-          # Only add hyphen/underscore conversions if the character exists
-          [[ $PACKAGE_NAME == *"-"* ]] && PATTERNS["${PACKAGE_NAME//-/_}"]="Hyphen to underscore"
-          [[ $PACKAGE_NAME == *"_"* ]] && PATTERNS["${PACKAGE_NAME//_/-}"]="Underscore to hyphen"
-
-          # Add js prefix/suffix patterns
-          PATTERNS["${PACKAGE_NAME}js"]="Added 'js' suffix"
-          PATTERNS["js-${PACKAGE_NAME}"]="Added 'js-' prefix"
-          PATTERNS["node-${PACKAGE_NAME}"]="Added 'node-' prefix"
-
-          # Only add character substitutions if the character exists in the package name
-          [[ $PACKAGE_NAME == *"a"* ]] && PATTERNS["${PACKAGE_NAME//a/4}"]="Replaced 'a' with '4'"
-          [[ $PACKAGE_NAME == *"e"* ]] && PATTERNS["${PACKAGE_NAME//e/3}"]="Replaced 'e' with '3'"
-          [[ $PACKAGE_NAME == *"i"* ]] && PATTERNS["${PACKAGE_NAME//i/1}"]="Replaced 'i' with '1'"
-          [[ $PACKAGE_NAME == *"o"* ]] && PATTERNS["${PACKAGE_NAME//o/0}"]="Replaced 'o' with '0'"
-          [[ $PACKAGE_NAME == *"s"* ]] && PATTERNS["${PACKAGE_NAME//s/5}"]="Replaced 's' with '5'"
-          [[ $PACKAGE_NAME == *"t"* ]] && PATTERNS["${PACKAGE_NAME//t/7}"]="Replaced 't' with '7'"
-
-          FOUND_SQUATTERS=false
-          echo "📦 Found packages names similar to yours $PACKAGE_NAME"
-          echo "----------------------------------------"
-
-          for pattern in "${!PATTERNS[@]}"; do
-            if npm view "$pattern" &>/dev/null; then
-              FOUND_SQUATTERS=true
-              VERSION=$(npm view "$pattern" version 2>/dev/null || echo "unknown")
-              TIME=$(npm view "$pattern" time.modified 2>/dev/null || echo "unknown")
-              AUTHOR=$(npm view "$pattern" author 2>/dev/null || echo "unknown")
-              echo "⚠️ Package: $pattern"
-              echo "Pattern: ${PATTERNS[$pattern]}"
-              echo "Version: $VERSION"
-              echo "Last Updated: $TIME"
-              echo "Author: $AUTHOR"
-              echo "URL: https://www.npmjs.com/package/$pattern"
-              echo "----------------------------------------"
+          for field in description license; do
+            if ! jq -e ".$field" package.json > /dev/null 2>&1; then
+              echo "::warning::Missing recommended field '$field' in package.json"
             fi
           done
 
-          if [ "$FOUND_SQUATTERS" = true ]; then
-            echo "::warning::Potential typosquatters detected (see the workflow logs). Consider registering these names to protect your package."
-            echo "TYPOSQUATTERS_FOUND=true" >> $GITHUB_ENV
-          else
-            echo "✅ No typosquatters found."
-            echo "TYPOSQUATTERS_FOUND=false" >> $GITHUB_ENV
+          if [ "$ENABLE_PROVENANCE" = "true" ]; then
+            REPO_URL=$(jq -r '.repository.url // .repository // ""' package.json)
+            if [ -z "$REPO_URL" ] || [ "$REPO_URL" = "null" ]; then
+              echo "::warning::Missing 'repository.url' in package.json — required when publishing with provenance (enable_provenance: true)"
+            fi
           fi
 
-      # Check if unscoped package name is available
-      - name: Checking full match
-        id: check_package
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
-          if npm view $PACKAGE_NAME &>/dev/null; then
-            echo "Global package name $PACKAGE_NAME is already taken."
-            echo "package_taken=true" >> $GITHUB_OUTPUT
-          else
-            echo "Global package name $PACKAGE_NAME is available."
-            echo "package_taken=false" >> $GITHUB_OUTPUT
-          fi
+          FULL_NAME=$(jq -r '.name' package.json)
+          PACKAGE_NAME=$(echo "$FULL_NAME" | sed 's|.*/||')
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
 
-  wait-for-approval:
-    needs: [verify-release, validate-package]
-    if: needs.validate-package.outputs.package_taken == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: package-approval
-      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
-    steps:
-      - name: Wait for approval
-        run: |
-          echo "⚠️ The unscoped package name '${{ needs.validate-package.outputs.package_name }}' is already taken on npm."
-          echo "Please review and approve this deployment to continue with scoped package only."
-          echo "If you want to proceed with publishing only the scoped package, approve this step."
-          echo "If you want to abort the workflow, reject this step."
+          if [[ "$FULL_NAME" == @*/* ]]; then
+            echo "is_scoped=true" >> $GITHUB_OUTPUT
+            if npm view "$PACKAGE_NAME" &>/dev/null; then
+              echo "unscoped_available=false" >> $GITHUB_OUTPUT
+              # Unscoped name is taken. Require explicit opt-in so the developer
+              # acknowledges the situation before the pipeline proceeds.
+              if [ "$PUBLISH_UNSCOPED" != "true" ]; then
+                echo "::error::Unscoped name '$PACKAGE_NAME' is already registered on npm."
+                echo "::error::If you own it and want to also publish under that name, update your workflow and re-run:"
+                echo "::error::  jobs:"
+                echo "::error::    publish-npm:"
+                echo "::error::      uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@..."
+                echo "::error::      with:"
+                echo "::error::        publish_unscoped: true"
+                echo "::error::      secrets:"
+                echo "::error::        NPM_TOKEN: \${{ secrets.NPM_TOKEN }}"
+                echo "::error::If you do not own it, no action is needed — the scoped package will publish fine once you remove this blocker."
+                exit 1
+              fi
+              echo "⚠️  Unscoped name '$PACKAGE_NAME' is taken — proceeding because publish_unscoped: true is set."
+            else
+              echo "unscoped_available=true" >> $GITHUB_OUTPUT
+              echo "ℹ️  Unscoped name '$PACKAGE_NAME' is available on npm."
+              if [ "$PUBLISH_UNSCOPED" != "true" ]; then
+                echo "   To also claim it, add 'publish_unscoped: true' under 'with:' in your consumer workflow."
+              fi
+            fi
+          else
+            echo "is_scoped=false" >> $GITHUB_OUTPUT
+            echo "unscoped_available=false" >> $GITHUB_OUTPUT
+            # For unscoped packages npm enforces ownership: publishing to a name
+            # you do not own will fail with a 403 from the registry.
+          fi
 
   publish:
-    needs: [verify-release, validate-package, wait-for-approval]
-    if: always() && needs.verify-release.result == 'success' && needs.validate-package.result == 'success' && (needs.validate-package.outputs.package_taken == 'false' || needs.wait-for-approval.result == 'success')
+    needs: [verify-release, validate-package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write  # required for provenance (OIDC)
     environment:
       name: npm-publish
       url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ inputs.node_version || '20.x' }}
           registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
 
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
-      - name: Verify package integrity
-        run: |
-          npm pack --dry-run
-          npm audit --production
-
-
-
-      # Publish scoped version
       - name: Publish scoped package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_ACCESS: ${{ inputs.package_access || 'public' }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
         run: |
-          if [[ "${{ inputs.package_access }}" != "public" && "${{ inputs.package_access }}" != "private" ]]; then
+          if [[ "$PACKAGE_ACCESS" != "public" && "$PACKAGE_ACCESS" != "private" ]]; then
             echo "::error::package_access must be either 'public' or 'private'"
             exit 1
           fi
-          PROVENANCE_FLAG=${{ inputs.enable_provenance && '--provenance' || '' }}
-          npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PROVENANCE_FLAG=""
+          [ "$ENABLE_PROVENANCE" = "true" ] && PROVENANCE_FLAG="--provenance"
+          npm publish $PROVENANCE_FLAG --access "$PACKAGE_ACCESS"
 
-      # Publish unscoped version if available
-      - name: Publish unscoped package as well if not taken
-        if: needs.validate-package.outputs.package_taken == 'false'
-        run: |
-          if [[ "${{ inputs.package_access }}" != "public" && "${{ inputs.package_access }}" != "private" ]]; then
-            echo "::error::package_access must be either 'public' or 'private'"
-            exit 1
-          fi
-          PROVENANCE_FLAG=${{ inputs.enable_provenance && '--provenance' || '' }}
-          # Temporarily modify package.json to remove scope
-          PACKAGE_NAME=$(node -p "require('./package.json').name.replace(/@.*\//, '')")
-          npm pkg set name=$PACKAGE_NAME
-          npm publish $PROVENANCE_FLAG --access ${{ inputs.package_access || 'public' }}
-          # Restore original package.json
-          git checkout package.json
+  # Only present when publish_unscoped: true is set in the consumer workflow and the package is scoped.
+  # Pauses for manual approval before running — configure the npm-publish-unscoped
+  # GitHub Environment with required reviewers in your repository settings.
+  # Reviewers should check the validate-package job logs for unscoped name availability
+  # before approving.
+  publish-unscoped:
+    needs: [validate-package, publish]
+    if: inputs.publish_unscoped == true && needs.validate-package.outputs.is_scoped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: npm-publish-unscoped
+      url: https://www.npmjs.com/package/${{ needs.validate-package.outputs.package_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version || '20.x' }}
+          registry-url: ${{ inputs.registry_url || 'https://registry.npmjs.org' }}
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Publish unscoped package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          UNSCOPED_NAME: ${{ needs.validate-package.outputs.package_name }}
+          UNSCOPED_AVAILABLE: ${{ needs.validate-package.outputs.unscoped_available }}
+          ENABLE_PROVENANCE: ${{ inputs.enable_provenance }}
+        run: |
+          echo "📋 Unscoped name : $UNSCOPED_NAME"
+          echo "📋 Available     : $UNSCOPED_AVAILABLE"
+
+          if [ "$UNSCOPED_AVAILABLE" = "false" ]; then
+            echo "::warning::Name '$UNSCOPED_NAME' is already taken on npm. Attempting publish anyway — this will succeed only if you own that package."
+          fi
+
+          ORIGINAL_NAME=$(jq -r '.name' package.json)
+          PROVENANCE_FLAG=""
+          [ "$ENABLE_PROVENANCE" = "true" ] && PROVENANCE_FLAG="--provenance"
+
+          npm pkg set name="$UNSCOPED_NAME"
+          npm publish $PROVENANCE_FLAG --access public
+          npm pkg set name="$ORIGINAL_NAME"
