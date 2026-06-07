@@ -6,27 +6,22 @@ This document covers architecture, versioning, the release process, and how to e
 
 ## Architecture
 
-Two-tier design. All ecosystems share the same security gate; each ecosystem has its own publish workflow.
+Two-tier design. The security gate is shared; the publish workflow is NPM-specific.
 
 ```
-verify-release.yml          ← shared, called by every publish workflow
-publish-npm.yml             ← NPM-specific
-publish-pypi.yml            ← PyPI-specific
+verify-release.yml          ← shared security gate
+publish-npm.yml             ← NPM publishing
 ```
 
-### Tier 1 — `verify-release.yml`
+### Tier 1 — `verify-release` job
 
-Runs before any package-specific logic. Checks:
+Runs first in `publish-npm.yml`. Checks:
 
 - Tag is a signed, annotated GPG tag
 - GPG key used to sign is present on the signer's GitHub account (`github.com/<user>.gpg`)
 - Tag commit is an ancestor of `origin/main`
 
-No package-specific dependencies — safe to reuse for any future ecosystem.
-
-### Tier 2 — `publish-npm.yml` / `publish-pypi.yml`
-
-Each workflow has three jobs (NPM has an optional fourth):
+### Tier 2 — remaining jobs in `publish-npm.yml`
 
 | Job | What it does |
 |---|---|
@@ -47,17 +42,7 @@ Consumers pin to a **version tag**:
 uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@1.0.0
 ```
 
-Internally, `publish-npm.yml` and `publish-pypi.yml` reference `verify-release.yml` via the full external path on the `release-stable` branch:
-
-```yaml
-uses: nautilus-wraith/package-publishing/.github/workflows/verify-release.yml@release-stable
-```
-
-**Why `@release-stable` and not `@1.0.0`?**
-
-Using a version tag internally creates a chicken-and-egg: to tag `1.0.0` you'd need `@1.0.0` to already exist in the file. The `release-stable` branch always points to the last tested release, so internal references always resolve correctly regardless of which version a consumer has pinned.
-
-Trade-off: when `release-stable` advances (e.g. to `1.1.0`), consumers pinned to `1.0.0` will run `verify-release.yml` from `1.1.0`. This is intentional — verification logic should always be current. The publish workflow itself (validation rules, inputs, behaviour) remains exactly at the pinned version.
+All logic — verification, validation, and publish — lives in `publish-npm.yml`. There is no internal workflow chaining, so the pinned version is fully self-contained.
 
 ---
 
@@ -93,7 +78,6 @@ Each publish job runs inside a named GitHub Environment. Environments provide de
 |---|---|---|
 | NPM | `npm-publish` | Always required |
 | NPM | `npm-publish-unscoped` | Only appears when `publish_unscoped: true` on a scoped package |
-| PyPI | `pypi-publish` | Always required |
 
 Create these environments in the **consumer repo** (not this repo).
 
@@ -161,26 +145,11 @@ git config --global user.signingkey YOUR_KEY_ID
 
 Secret: `NPM_TOKEN` (required)
 
-### `publish-pypi.yml`
-
-| Input | Type | Default | Description |
-|---|---|---|---|
-| `python_version` | string | `3.11` | Python version |
-| `registry_url` | string | `https://pypi.org` | Target registry |
-| `enable_provenance` | boolean | `true` | Publish with provenance |
-
-Secret: `PYPI_TOKEN` (required)
-
 ---
 
 ## Adding a new ecosystem
 
 1. Create `.github/workflows/publish-<lang>.yml`
-2. Follow the same three-job structure: `verify-release` → `validate-package` → `publish`
-3. Call `verify-release` with the full external path:
-   ```yaml
-   verify-release:
-     uses: nautilus-wraith/package-publishing/.github/workflows/verify-release.yml@release-stable
-   ```
-4. Add manifest validation inline in `validate-package` (hard-fail on missing `name`/`version`, warn on missing optional fields)
-5. Update this file and README.md
+2. Inline the `verify-release` job directly (copy from `publish-npm.yml`) — no chaining needed
+3. Add manifest validation inline in `validate-package` (hard-fail on missing `name`/`version`, warn on missing optional fields)
+4. Update this file and README.md

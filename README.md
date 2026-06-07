@@ -1,6 +1,6 @@
 # Package Publishing Workflows
 
-Reusable GitHub Actions workflows for publishing NPM and PyPI packages with GPG-verified releases and provenance.
+Reusable GitHub Actions workflows for publishing NPM packages with GPG-verified releases and provenance.
 
 > For architecture, versioning internals, and maintainer instructions see [README-ADMIN.md](README-ADMIN.md).
 
@@ -10,7 +10,7 @@ Reusable GitHub Actions workflows for publishing NPM and PyPI packages with GPG-
 
 - GPG key configured and public key uploaded to your GitHub account
 - Signed Git tags enabled on your release branch (`Settings → Branches → Require signed tags`)
-- Registry token stored as a repository secret (`NPM_TOKEN` or `PYPI_TOKEN`)
+- NPM token stored as a repository secret (`NPM_TOKEN`)
 
 ---
 
@@ -18,7 +18,7 @@ Reusable GitHub Actions workflows for publishing NPM and PyPI packages with GPG-
 
 ### Step 1 — Add the workflow file to your repo
 
-**NPM** — create `.github/workflows/publish-npm.yml`:
+Create `.github/workflows/publish-npm.yml`:
 
 ```yaml
 name: Publish NPM
@@ -38,37 +38,17 @@ jobs:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-**PyPI** — create `.github/workflows/publish-pypi.yml`:
+Optional inputs:
 
-```yaml
-name: Publish PyPI
-
-on:
-  release:
-    types: [published]
-
-permissions:
-  contents: read
-  id-token: write  # required for provenance
-
-jobs:
-  publish-pypi:
-    uses: nautilus-wraith/package-publishing/.github/workflows/publish-pypi.yml@1.0.0
-    secrets:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-```
-
-Optional inputs (all have sensible defaults):
-
-| Input | NPM default | PyPI default |
+| Input | Default | Description |
 |---|---|---|
-| `node_version` / `python_version` | `20.x` | `3.11` |
-| `registry_url` | `https://registry.npmjs.org` | `https://pypi.org` |
-| `package_access` *(NPM only)* | `public` | — |
-| `enable_provenance` | `true` | `true` |
-| `publish_unscoped` *(NPM only)* | `false` | — |
+| `node_version` | `20.x` | Node.js version |
+| `registry_url` | `https://registry.npmjs.org` | Target registry |
+| `package_access` | `public` | `public` or `private` |
+| `enable_provenance` | `true` | Publish with OIDC provenance |
+| `publish_unscoped` | `false` | For scoped packages: enable the unscoped name gate |
 
-> `enable_provenance` requires the repository to be **public**. Set it to `false` for private repositories.
+> `enable_provenance` requires the repository to be **public** and `package.json` to have a `repository.url` field. Set it to `false` for private repositories.
 
 ### Step 2 — Create a signed tag and publish the release
 
@@ -98,21 +78,21 @@ gh release create 1.0.0 --title "Release 1.0.0" --notes "What changed"
 
 ## NPM — scoped vs. unscoped packages
 
-If your `package.json` declares a scoped name (e.g. `@org/pkg`), the workflow always checks whether the unscoped equivalent (`pkg`) is already registered on npm. This check happens before publishing and has three outcomes:
+If your `package.json` declares a scoped name (e.g. `@org/pkg`), the workflow always checks whether the unscoped equivalent (`pkg`) is already registered on npm. This check happens before publishing:
 
 | Situation | `publish_unscoped` | What happens |
 |---|---|---|
-| Unscoped name is **taken** | not set | **Pipeline stops.** You must set `publish_unscoped: true` to acknowledge the collision and re-run. |
-| Unscoped name is **taken** | `true` | Pipeline proceeds. Scoped package publishes. A manual approval gate appears for the unscoped publish — if you don't own the name, npm will reject it with a 403. |
-| Unscoped name is **available** | not set | Pipeline proceeds normally. A log note suggests `publish_unscoped: true` to claim it. |
-| Unscoped name is **available** | `true` | Pipeline proceeds. Scoped package publishes. A manual approval gate appears to optionally claim the unscoped name. |
-| Package is already **unscoped** | — | No check. If the name is owned by someone else, npm rejects the push with a 403. |
+| Unscoped name is **taken** | not set | **Pipeline stops.** Set `publish_unscoped: true` in `with:` to acknowledge and re-run. |
+| Unscoped name is **taken** | `true` | Proceeds. Scoped publishes. Approval gate appears for unscoped — npm rejects with 403 if you don't own it. |
+| Unscoped name is **available** | not set | Proceeds. Log note suggests `publish_unscoped: true` to claim it. |
+| Unscoped name is **available** | `true` | Proceeds. Scoped publishes. Approval gate appears to optionally claim the unscoped name. |
+| Package is already **unscoped** | — | No check. npm rejects with 403 if you don't own the name. |
 
 `publish_unscoped: true` means *"I am aware of the unscoped name situation and want to decide."* npm is the final authority on whether the publish is actually allowed.
 
 ### Setting up the unscoped approval gate
 
-The `publish-unscoped` job is triggered by setting `publish_unscoped: true` in your consumer workflow:
+Set `publish_unscoped: true` in your consumer workflow:
 
 ```yaml
 jobs:
@@ -124,4 +104,4 @@ jobs:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-The job then pauses at a GitHub Environment called `npm-publish-unscoped`. Create it in your repo (Settings → Environments) and add at least one required reviewer. When the gate triggers, the reviewer can check the `validate-package` logs for the availability status and the environment badge links directly to the npm page for the unscoped name.
+The `publish-unscoped` job pauses at a GitHub Environment called `npm-publish-unscoped`. Create it in your repo (Settings → Environments) with at least one required reviewer. The reviewer sees the availability status in the `validate-package` logs and the environment badge links directly to the npm page for the unscoped name.
