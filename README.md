@@ -8,8 +8,7 @@ Reusable GitHub Actions workflows for publishing NPM packages with GPG-verified 
 
 ## Prerequisites
 
-- GPG key configured and public key uploaded to your GitHub account
-- Signed Git tags enabled on your release branch (`Settings → Branches → Require signed tags`)
+- GPG key configured and public key uploaded to your GitHub account (`Settings → SSH and GPG keys`)
 - NPM token stored as a repository secret (`NPM_TOKEN`)
 
 ---
@@ -44,7 +43,7 @@ Optional inputs:
 |---|---|---|
 | `node_version` | `20.x` | Node.js version |
 | `registry_url` | `https://registry.npmjs.org` | Target registry |
-| `package_access` | `public` | `public` or `private` |
+| `package_access` | `public` | npm package visibility: `public` (anyone can install) or `private` (npm org members only, requires paid npm plan). Scoped packages default to private on npm without this flag — set to `public` for open-source packages. |
 | `enable_provenance` | `true` | Publish with OIDC provenance |
 | `publish_unscoped` | `false` | For scoped packages: enable the unscoped name gate |
 
@@ -69,10 +68,13 @@ gh release create 1.0.0 --title "Release 1.0.0" --notes "What changed"
 
 ## What the workflow checks
 
-1. **GPG tag signature** — verifies the tag is signed and the key is on your GitHub account
-2. **Tag on main** — confirms the tag points to a commit on the main branch
-3. **Package manifest** — validates required fields (`name`, `version`) and warns on missing recommended fields (`description`, `license`)
-4. **Publish** — pushes to the registry with OIDC provenance
+| Check | Job | What it does | Fails on |
+|---|---|---|---|
+| GPG tag signature | `verify-release` | Fetches the release author's public GPG key from `github.com/<user>.gpg` and runs `git tag -v` | Unsigned tag, key not on GitHub account, or key mismatch |
+| Tag on main | `verify-release` | Confirms the tagged commit is an ancestor of `origin/main` | Tag points to a commit outside of main |
+| Package manifest | `validate-package` | Checks `package.json` for required fields (`name`, `version`); warns on missing `description`, `license`; warns if `repository.url` is absent when provenance is enabled | Missing `name` or `version`; invalid JSON |
+| Unscoped name conflict | `validate-package` | For scoped packages (`@org/pkg`), checks if the unscoped name (`pkg`) is already taken on npm | Taken and `publish_unscoped` not set — see [scoped vs. unscoped](#npm--scoped-vs-unscoped-packages) |
+| Publish | `publish` | Runs `npm publish` with `--access` and optionally `--provenance` | npm auth failure, version already exists, registry error |
 
 ---
 

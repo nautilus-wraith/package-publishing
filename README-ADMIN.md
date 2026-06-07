@@ -123,10 +123,8 @@ gpg --full-generate-key
 # Export and upload to GitHub (Settings → SSH and GPG keys)
 gpg --armor --export your-email@example.com
 
-# Tell Git which key to use
+# Tell Git which key to use for signing
 git config --global user.signingkey YOUR_KEY_ID
-
-# Enable signed tags on the release branch (Settings → Branches → Require signed tags)
 ```
 
 ---
