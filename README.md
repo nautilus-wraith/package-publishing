@@ -110,9 +110,7 @@ If your `package.json` declares a scoped name (e.g. `@org/pkg`), the workflow al
 
 ### Setting up the unscoped approval gate
 
-The `publish-unscoped` job pauses at a GitHub Environment called `npm-publish-unscoped`. Create it in your repo (Settings → Environments) and add at least one required reviewer. When the gate triggers, the reviewer can check the `validate-package` logs for the availability status and the environment badge links directly to the npm page for the unscoped name.
-
-To opt in, pass the input in your consumer workflow:
+The `publish-unscoped` job is triggered by setting `publish_unscoped: true` in your consumer workflow:
 
 ```yaml
 jobs:
@@ -123,3 +121,5 @@ jobs:
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
+
+The job then pauses at a GitHub Environment called `npm-publish-unscoped`. Create it in your repo (Settings → Environments) and add at least one required reviewer. When the gate triggers, the reviewer can check the `validate-package` logs for the availability status and the environment badge links directly to the npm page for the unscoped name.

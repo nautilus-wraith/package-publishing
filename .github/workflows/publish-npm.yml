@@ -31,7 +31,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: 'For scoped packages: also publish under the unscoped name if it is available'
+        description: 'For scoped packages: also publish under the unscoped name'
     secrets:
       NPM_TOKEN:
         required: true
@@ -90,8 +90,15 @@ jobs:
               # acknowledges the situation before the pipeline proceeds.
               if [ "$PUBLISH_UNSCOPED" != "true" ]; then
                 echo "::error::Unscoped name '$PACKAGE_NAME' is already registered on npm."
-                echo "::error::If you own it and intend to publish or update the unscoped package alongside the scoped one, set 'publish_unscoped: true' in your consumer workflow to acknowledge this and enable the manual approval gate."
-                echo "::error::If you do not own it, no action is needed — but be aware a name collision exists."
+                echo "::error::If you own it and want to also publish under that name, update your workflow and re-run:"
+                echo "::error::  jobs:"
+                echo "::error::    publish-npm:"
+                echo "::error::      uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@..."
+                echo "::error::      with:"
+                echo "::error::        publish_unscoped: true"
+                echo "::error::      secrets:"
+                echo "::error::        NPM_TOKEN: \${{ secrets.NPM_TOKEN }}"
+                echo "::error::If you do not own it, no action is needed — the scoped package will publish fine once you remove this blocker."
                 exit 1
               fi
               echo "⚠️  Unscoped name '$PACKAGE_NAME' is taken — proceeding because publish_unscoped: true is set."
@@ -99,7 +106,7 @@ jobs:
               echo "unscoped_available=true" >> $GITHUB_OUTPUT
               echo "ℹ️  Unscoped name '$PACKAGE_NAME' is available on npm."
               if [ "$PUBLISH_UNSCOPED" != "true" ]; then
-                echo "   To also claim it, set 'publish_unscoped: true' in your consumer workflow."
+                echo "   To also claim it, add 'publish_unscoped: true' under 'with:' in your consumer workflow."
               fi
             fi
           else
@@ -143,7 +150,7 @@ jobs:
           [ "$ENABLE_PROVENANCE" = "true" ] && PROVENANCE_FLAG="--provenance"
           npm publish $PROVENANCE_FLAG --access "$PACKAGE_ACCESS"
 
-  # Only present when publish_unscoped: true and the package is scoped.
+  # Only present when publish_unscoped: true is set in the consumer workflow and the package is scoped.
   # Pauses for manual approval before running — configure the npm-publish-unscoped
   # GitHub Environment with required reviewers in your repository settings.
   # Reviewers should check the validate-package job logs for unscoped name availability

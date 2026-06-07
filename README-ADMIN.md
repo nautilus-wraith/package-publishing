@@ -124,7 +124,7 @@ When `publish-unscoped` runs it pauses at the `npm-publish-unscoped` GitHub Envi
 - `validate-package` job logs — shows whether the unscoped name was available or taken
 - Environment badge URL — links directly to `https://www.npmjs.com/package/<unscoped-name>`
 
-Configure `npm-publish-unscoped` in the consumer repo (Settings → Environments) with at least one required reviewer. Without required reviewers the job runs immediately without a gate.
+`publish-unscoped` is triggered by `publish_unscoped: true` in the consumer workflow `with:` block. Configure `npm-publish-unscoped` in the consumer repo (Settings → Environments) with at least one required reviewer. Without required reviewers the job runs immediately without a gate.
 
 ---
 
