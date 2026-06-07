@@ -68,6 +68,8 @@ Optional inputs (all have sensible defaults):
 | `enable_provenance` | `true` | `true` |
 | `publish_unscoped` *(NPM only)* | `false` | — |
 
+> `enable_provenance` requires the repository to be **public**. Set it to `false` for private repositories.
+
 ### Step 2 — Create a signed tag and publish the release
 
 ```bash
