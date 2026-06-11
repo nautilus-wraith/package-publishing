@@ -36,9 +36,6 @@ on:
       NPM_TOKEN:
         required: true
         description: 'NPM token for publishing packages'
-  release:
-    types: [published]
-
 jobs:
   verify-release:
     runs-on: ubuntu-latest
