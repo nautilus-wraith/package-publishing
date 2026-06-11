@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   publish-npm:
-    uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@1.0.0
+    uses: nautilus-wraith/package-publishing/.github/workflows/publish-npm.yml@1.0.0  # Check the latest available tag.
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```

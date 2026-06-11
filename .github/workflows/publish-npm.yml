@@ -47,6 +47,12 @@ jobs:
     env:
       TAG_NAME: ${{ github.event.release.tag_name }}
     steps:
+      - name: Reject fork runs
+        if: github.event.repository.fork == true
+        run: |
+          echo "::error::Publishing is not allowed from a forked repository. Only the upstream repository can publish packages."
+          exit 1
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
